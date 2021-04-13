@@ -1,0 +1,28 @@
+
+# interfaces to listen for external XMPP connections on
+listen = [ "0.0.0.0:5222", "0.0.0.0:5269" ]
+
+# these ports shouldn't do any TLS, but should assume any connection from xmpp-proxy is secure
+# prosody module: https://modules.prosody.im/mod_secure_interfaces.html
+
+# c2s port backend XMPP server listens on
+c2s_target = "127.0.0.1:15222"
+
+# s2s port backend XMPP server listens on
+s2s_target = "127.0.0.1:15269"
+
+# send PROXYv1 header to backend XMPP server
+# https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt
+# prosody module: https://modules.prosody.im/mod_net_proxy.html
+# ejabberd config: https://docs.ejabberd.im/admin/configuration/listen-options/#use-proxy-protocol
+proxy = true
+
+# limit incoming stanzas to this many bytes, default to ejabberd's default
+# https://github.com/processone/ejabberd/blob/master/ejabberd.yml.example#L32
+# xmpp-proxy will use this many bytes + 16k per connection
+max_stanza_size_bytes = 262_144
+
+# TLS key/certificate valid for all your XMPP domains, PEM format
+# included systemd unit can only read files from /etc/xmpp-proxy/ so put them in there
+tls_key = "/etc/xmpp-proxy/le.key"
+tls_cert = "/etc/xmpp-proxy/fullchain.cer"

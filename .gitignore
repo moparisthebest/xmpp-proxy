@@ -1,0 +1,4 @@
+/target/
+**/*.rs.bk
+.idea
+**/*.kate-swp
