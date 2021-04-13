@@ -1,0 +1,30 @@
+[package]
+name = "xmpp-proxy"
+version = "1.0.0"
+authors = ["moparisthebest <admin@moparisthebest.com>"]
+
+description = "Reverse XMPP proxy."
+repository  = "https://code.moparisthebest.com/moparisthebest/xmpp-proxy"
+keywords    = ["xmpp", "proxy"]
+
+license = "AGPL-3.0-or-later"
+readme = "README.md"
+
+edition = "2018"
+
+include = [
+    "**/*.rs",
+    "Cargo.toml",
+    "*.md",
+    "xmpp-proxy.toml",
+]
+
+[dependencies]
+toml = "0.5"
+serde_derive = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+futures = "0.3"
+die = "0.2.0"
+anyhow = "1.0"
+tokio = { version = "1.4", features = ["net", "rt", "rt-multi-thread", "macros", "io-util"] }
+tokio-rustls = "0.22"
