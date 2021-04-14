@@ -3,7 +3,7 @@ use anyhow::{anyhow, Result};
 pub trait SliceSubsequence<T> {
     fn trim_start(&self, needle: &[T]) -> &[T];
     fn first_index_of(&self, needle: &[T]) -> Result<usize>;
-    fn replace(self, needle: &[T], replacement: &[T]) -> Vec<T>;
+    fn replace_first(self, needle: &[T], replacement: &[T]) -> Vec<T>;
 
     fn contains_seq(&self, needle: &[T]) -> bool {
         self.first_index_of(needle).is_ok()
@@ -36,8 +36,8 @@ impl<T: PartialEq + Clone> SliceSubsequence<T> for &[T] {
         Err(anyhow!("not found"))
     }
 
-    fn replace(self, needle: &[T], replacement: &[T]) -> Vec<T> {
-        self.to_vec().replace(needle, replacement)
+    fn replace_first(self, needle: &[T], replacement: &[T]) -> Vec<T> {
+        self.to_vec().replace_first(needle, replacement)
     }
 }
 
@@ -50,11 +50,17 @@ impl<T: PartialEq + Clone> SliceSubsequence<T> for Vec<T> {
         return (self.as_slice()).first_index_of(needle);
     }
 
-    fn replace(mut self, needle: &[T], replacement: &[T]) -> Vec<T> {
-        while let Ok(idx) = self.first_index_of(needle) {
-            self.splice(idx..(idx + needle.len()), replacement.iter().cloned());
+    fn replace_first(self, needle: &[T], replacement: &[T]) -> Vec<T> {
+        if let Ok(idx) = self.first_index_of(needle) {
+            let second = &self[(idx + needle.len())..];
+            let mut ret = Vec::with_capacity(idx + replacement.len() + second.len());
+            ret.extend_from_slice(&self[..idx]);
+            ret.extend_from_slice(replacement);
+            ret.extend_from_slice(second);
+            ret
+        } else {
+            self
         }
-        self
     }
 }
 
@@ -74,23 +80,23 @@ mod tests {
         assert_eq!(buf, b"bla");
     }
     #[test]
-    fn replace() {
-        let buf = b"bla to='tsnhaou' bla2".replace(b" to=", b" from=");
+    fn replace_first() {
+        let buf = b"bla to='tsnhaou' bla2".replace_first(b" to=", b" from=");
         assert_eq!(buf, b"bla from='tsnhaou' bla2");
 
-        let buf = buf.replace(b" from=", b" to=");
+        let buf = buf.replace_first(b" from=", b" to=");
         assert_eq!(buf, b"bla to='tsnhaou' bla2");
 
-        let buf = buf.replace(b" to=", b" from=");
+        let buf = buf.replace_first(b" to=", b" from=");
         assert_eq!(buf, b"bla from='tsnhaou' bla2");
 
-        let buf = b"bla to='tsnhaou' bla2".replace(b"bla", b"boo");
-        assert_eq!(buf, b"boo to='tsnhaou' boo2");
+        let buf = b"bla to='tsnhaou' bla2".replace_first(b"bla", b"boo");
+        assert_eq!(buf, b"boo to='tsnhaou' bla2");
 
-        let buf = buf.replace(b"boo", b"bla");
+        let buf = buf.replace_first(b"boo", b"bla");
         assert_eq!(buf, b"bla to='tsnhaou' bla2");
 
-        let buf = buf.replace(b" bla2", b"");
+        let buf = buf.replace_first(b" bla2", b"");
         assert_eq!(buf, b"bla to='tsnhaou'");
     }
 }
