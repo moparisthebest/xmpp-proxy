@@ -103,8 +103,10 @@ impl Config {
     }
 }
 
-fn to_str(buf: &[u8]) -> &str {
-    std::str::from_utf8(buf).unwrap_or("[invalid utf-8]")
+fn to_str(buf: &[u8]) -> std::borrow::Cow<'_, str> {
+    //&str {
+    //std::str::from_utf8(buf).unwrap_or("[invalid utf-8]")
+    String::from_utf8_lossy(buf)
 }
 
 async fn handle_connection(mut stream: tokio::net::TcpStream, client_addr: SocketAddr, local_addr: SocketAddr, config: CloneableConfig) -> Result<()> {
@@ -148,7 +150,11 @@ async fn handle_connection(mut stream: tokio::net::TcpStream, client_addr: Socke
     if !direct_tls {
         let mut stream_open = Vec::new();
 
-        while let Ok(n) = stream.read(in_filter.current_buf()).await {
+        let (in_rd, mut in_wr) = stream.split();
+        // we naively read 1 byte at a time, which buffering significantly speeds up
+        let mut in_rd = tokio::io::BufReader::with_capacity(IN_BUFFER_SIZE, in_rd);
+
+        while let Ok(n) = in_rd.read(in_filter.current_buf()).await {
             if n == 0 {
                 bail!("stream ended before open");
             }
@@ -160,32 +166,36 @@ async fn handle_connection(mut stream: tokio::net::TcpStream, client_addr: Socke
                     continue;
                 } else if buf.starts_with(b"<stream:stream ") {
                     debug!("> {} '{}'", client_addr, to_str(&stream_open));
-                    stream.write_all(&stream_open).await?;
+                    in_wr.write_all(&stream_open).await?;
                     stream_open.clear();
 
                     // gajim seems to REQUIRE an id here...
                     let buf = if buf.contains_seq(b"id=") {
-                        buf.replace(b" id='", b" id='xmpp-proxy")
-                            .replace(br#" id=""#, br#" id="xmpp-proxy"#)
-                            .replace(b" to=", br#" bla toblala="#)
-                            .replace(b" from=", b" to=")
-                            .replace(br#" bla toblala="#, br#" from="#)
+                        buf.replace_first(b" id='", b" id='xmpp-proxy")
+                            .replace_first(br#" id=""#, br#" id="xmpp-proxy"#)
+                            .replace_first(b" to=", br#" bla toblala="#)
+                            .replace_first(b" from=", b" to=")
+                            .replace_first(br#" bla toblala="#, br#" from="#)
                     } else {
-                        buf.replace(b" to=", br#" bla toblala="#)
-                            .replace(b" from=", b" to=")
-                            .replace(br#" bla toblala="#, br#" id='xmpp-proxy' from="#)
+                        buf.replace_first(b" to=", br#" bla toblala="#)
+                            .replace_first(b" from=", b" to=")
+                            .replace_first(br#" bla toblala="#, br#" id='xmpp-proxy' from="#)
                     };
 
                     debug!("> {} '{}'", client_addr, to_str(&buf));
-                    stream.write_all(&buf).await?;
+                    in_wr.write_all(&buf).await?;
 
-                    stream
-                        .write_all(br###"<features xmlns="http://etherx.jabber.org/streams"><starttls xmlns="urn:ietf:params:xml:ns:xmpp-tls"><required/></starttls></features>"###)
-                        .await?;
-                    stream.flush().await?;
+                    // ejabberd never sends <starttls/> with the first, only the second?
+                    //let buf = br###"<features xmlns="http://etherx.jabber.org/streams"><starttls xmlns="urn:ietf:params:xml:ns:xmpp-tls"><required/></starttls></features>"###;
+                    let buf = br###"<stream:features><starttls xmlns="urn:ietf:params:xml:ns:xmpp-tls"><required/></starttls></stream:features>"###;
+                    debug!("> {} '{}'", client_addr, to_str(buf));
+                    in_wr.write_all(buf).await?;
+                    in_wr.flush().await?;
                 } else if buf.starts_with(b"<starttls ") {
-                    stream.write_all(br###"<proceed xmlns="urn:ietf:params:xml:ns:xmpp-tls" />"###).await?;
-                    stream.flush().await?;
+                    let buf = br###"<proceed xmlns="urn:ietf:params:xml:ns:xmpp-tls" />"###;
+                    debug!("> {} '{}'", client_addr, to_str(buf));
+                    in_wr.write_all(buf).await?;
+                    in_wr.flush().await?;
                     break;
                 } else {
                     bail!("bad pre-tls stanza: {}", to_str(&buf));
@@ -197,7 +207,6 @@ async fn handle_connection(mut stream: tokio::net::TcpStream, client_addr: Socke
     let stream = config.acceptor.accept(stream).await?;
 
     let (in_rd, mut in_wr) = tokio::io::split(stream);
-
     // we naively read 1 byte at a time, which buffering significantly speeds up
     let mut in_rd = tokio::io::BufReader::with_capacity(IN_BUFFER_SIZE, in_rd);
 
@@ -396,7 +405,7 @@ impl StanzaFilter {
         //println!("b: '{}', cnt: {}, tag_cnt: {}, self.buf.len(): {}", b as char, self.cnt, self.tag_cnt, self.buf.len());
         self.cnt += 1;
         if self.cnt == self.buf_size {
-            bail!("stanza too big");
+            bail!("stanza too big: {}", to_str(&self.buf));
         }
         Ok(None)
     }
