@@ -67,7 +67,7 @@ impl<T: PartialEq + Clone> SliceSubsequence<T> for Vec<T> {
 #[cfg(test)]
 mod tests {
     use crate::slicesubsequence::*;
-    const WHITESPACE: &[u8] = b" \t\n\r";
+    use crate::WHITESPACE;
 
     #[test]
     fn trim_start() {
