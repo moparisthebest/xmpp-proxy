@@ -9,6 +9,7 @@ enum StanzaState {
     StanzaFirstChar,
     InsideTagFirstChar,
     InsideTag,
+    InsideAttribute(u8),
     BetweenTags,
     ExclamationTag(usize),
     InsideCDATA,
@@ -71,18 +72,18 @@ impl StanzaFilter {
             }
             StanzaFirstChar => match b {
                 b'/' => self.state = EndStream,
-                b'!' => bail!("illegal stanza: {}", to_str(&self.buf[..(self.cnt + 1)])),
+                b'!' | b'>' | b'\'' | b'"' => bail!("illegal stanza: {}", to_str(&self.buf[..(self.cnt + 1)])),
                 b'?' => self.state = QuestionTag(self.cnt + 4), // 4 is length of b"xml "
                 _ => self.state = InsideTag,
             },
             InsideTagFirstChar => match b {
                 b'/' => self.tag_cnt -= 2,
                 b'!' => self.state = ExclamationTag(self.cnt + 7), // 7 is length of b"[CDATA["
-                b'?' => bail!("illegal stanza: {}", to_str(&self.buf[..(self.cnt + 1)])),
+                b'?' | b'>' | b'\'' | b'"' => bail!("illegal stanza: {}", to_str(&self.buf[..(self.cnt + 1)])),
                 _ => self.state = InsideTag,
             },
-            InsideTag => {
-                if b == b'>' {
+            InsideTag => match b {
+                b'>' => {
                     if self.buf[self.cnt - 1] == b'/' {
                         // state can't be InsideTag unless we are on at least the second character, so can't go out of range
                         // self-closing tag
@@ -96,6 +97,13 @@ impl StanzaFilter {
                         return self.stanza_end();
                     }
                     self.state = BetweenTags;
+                }
+                b'\'' | b'"' => self.state = InsideAttribute(b),
+                _ => {}
+            },
+            InsideAttribute(end) => {
+                if b == end {
+                    self.state = InsideTag;
                 }
             }
             QuestionTag(idx) => {
@@ -206,6 +214,7 @@ mod tests {
     async fn process_next_byte() -> std::result::Result<(), anyhow::Error> {
         let mut filter = StanzaFilter::new(262_144);
 
+        //todo: <x a='/>'>This is going to be fun.</x>
         assert_eq!(
             StanzaReader(Cursor::new(
                 br###"
@@ -213,6 +222,11 @@ mod tests {
             <stream:stream xmlns='jabber:server' xmlns:stream='http://etherx.jabber.org/streams' xmlns:db='jabber:server:dialback' version='1.0' to='example.org' from='example.com' xml:lang='en'>
             <a/><b>inside b before c<c>inside c</c></b></stream:stream>
             <q>bla<![CDATA[<this>is</not><xml/>]]>bloo</q>
+            <x><![CDATA[ lol</x> ]]></x>
+            <z><x><![CDATA[ lol</x> ]]></x></z>
+            <a a='![CDATA['/>
+            <x a='/>'>This is going to be fun.</x>
+            <z><x a='/>'>This is going to be fun.</x></y>
             <d></d><e><![CDATA[what]>]]]]></e></stream:stream>
             "###,
             ))
@@ -225,6 +239,11 @@ mod tests {
             "<b>inside b before c<c>inside c</c></b>",
             "</stream:stream>",
             "<q>bla<![CDATA[<this>is</not><xml/>]]>bloo</q>",
+            "<x><![CDATA[ lol</x> ]]></x>",
+            "<z><x><![CDATA[ lol</x> ]]></x></z>",
+            "<a a='![CDATA['/>",
+            "<x a='/>'>This is going to be fun.</x>",
+            "<z><x a='/>'>This is going to be fun.</x></y>",
             "<d></d>",
             "<e><![CDATA[what]>]]]]></e>",
             "</stream:stream>",
