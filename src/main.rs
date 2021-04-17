@@ -30,8 +30,6 @@ use stanzafilter::*;
 const IN_BUFFER_SIZE: usize = 8192;
 const OUT_BUFFER_SIZE: usize = 8192;
 
-pub const WHITESPACE: &[u8] = b" \t\n\r";
-
 #[cfg(debug_assertions)]
 fn c2s(is_c2s: bool) -> &'static str {
     if is_c2s {
@@ -160,7 +158,6 @@ async fn handle_connection(mut stream: tokio::net::TcpStream, client_addr: Socke
 
         while let Ok(Some(buf)) = in_rd.next(&mut in_filter).await {
             debug!("received pre-tls stanza: {} '{}'", client_addr, to_str(&buf));
-            let buf = buf.trim_start(WHITESPACE);
             if buf.starts_with(b"<?xml ") {
                 debug!("> {} '{}'", client_addr, to_str(&buf));
                 in_wr.write_all(&buf).await?;
@@ -218,7 +215,6 @@ async fn handle_connection(mut stream: tokio::net::TcpStream, client_addr: Socke
 
         while let Ok(Some(buf)) = in_rd.next(&mut in_filter).await {
             debug!("received pre-<stream:stream> stanza: {} '{}'", client_addr, to_str(&buf));
-            let buf = buf.trim_start(WHITESPACE);
             if buf.starts_with(b"<?xml ") {
                 stream_open.extend_from_slice(buf);
             } else if buf.starts_with(b"<stream:stream ") {
