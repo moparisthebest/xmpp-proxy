@@ -211,7 +211,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn process_next_byte() -> std::result::Result<(), anyhow::Error> {
+    async fn process_next_byte() -> Result<()> {
         let mut filter = StanzaFilter::new(262_144);
 
         //todo: <x a='/>'>This is going to be fun.</x>

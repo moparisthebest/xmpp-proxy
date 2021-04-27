@@ -4,6 +4,7 @@ pub trait SliceSubsequence<T> {
     fn trim_start(&self, needle: &[T]) -> &[T];
     fn first_index_of(&self, needle: &[T]) -> Result<usize>;
     fn replace_first(self, needle: &[T], replacement: &[T]) -> Vec<T>;
+    fn extract_between(&self, before: &[T], after: &[T]) -> Result<&[T]>;
 
     fn contains_seq(&self, needle: &[T]) -> bool {
         self.first_index_of(needle).is_ok()
@@ -39,6 +40,11 @@ impl<T: PartialEq + Clone> SliceSubsequence<T> for &[T] {
     fn replace_first(self, needle: &[T], replacement: &[T]) -> Vec<T> {
         self.to_vec().replace_first(needle, replacement)
     }
+
+    fn extract_between(&self, before: &[T], after: &[T]) -> Result<&[T]> {
+        let first = &self[self.first_index_of(before)? + before.len()..];
+        Ok(&first[..first.first_index_of(after)? + after.len() - 1])
+    }
 }
 
 impl<T: PartialEq + Clone> SliceSubsequence<T> for Vec<T> {
@@ -47,7 +53,7 @@ impl<T: PartialEq + Clone> SliceSubsequence<T> for Vec<T> {
     }
 
     fn first_index_of(&self, needle: &[T]) -> Result<usize> {
-        return (self.as_slice()).first_index_of(needle);
+        (self.as_slice()).first_index_of(needle)
     }
 
     fn replace_first(self, needle: &[T], replacement: &[T]) -> Vec<T> {
@@ -61,6 +67,11 @@ impl<T: PartialEq + Clone> SliceSubsequence<T> for Vec<T> {
         } else {
             self
         }
+    }
+
+    fn extract_between(&self, before: &[T], after: &[T]) -> Result<&[T]> {
+        let first = &self[self.first_index_of(before)? + before.len()..];
+        Ok(&first[..first.first_index_of(after)? + after.len() - 1])
     }
 }
 
@@ -98,5 +109,18 @@ mod tests {
 
         let buf = buf.replace_first(b" bla2", b"");
         assert_eq!(buf, b"bla to='tsnhaou'");
+    }
+    #[test]
+    fn extract_between() {
+        let buf = &b"bla to='tsnhaou' bla2"[..];
+        assert_eq!(buf.extract_between(b" to='", b"'").unwrap(), b"tsnhaou");
+
+        let buf = &br###"<stream:stream xmlns='jabber:server' xmlns:stream='http://etherx.jabber.org/streams' xmlns:db='jabber:server:dialback' version='1.0' to='example.org' from='example.com' xml:lang='en'>"###[..];
+
+        assert_eq!(buf.extract_between(b" to='", b"'").or_else(|_| buf.extract_between(b" to=\"", b"\"")).unwrap(), b"example.org");
+
+        let buf = &br###"<stream:stream xmlns="jabber:server" xmlns:stream="http://etherx.jabber.org/streams" xmlns:db="jabber:server:dialback" version="1.0" to="example.org" from="example.com" xml:lang="en">"###[..];
+
+        assert_eq!(buf.extract_between(b" to='", b"'").or_else(|_| buf.extract_between(b" to=\"", b"\"")).unwrap(), b"example.org");
     }
 }
