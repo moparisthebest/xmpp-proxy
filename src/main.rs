@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::fs::File;
 use std::io;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Read, Write};
 use std::iter::Iterator;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -11,13 +11,16 @@ use die::Die;
 
 use serde_derive::Deserialize;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
-use tokio_rustls::rustls::internal::pemfile::{certs, pkcs8_private_keys};
-use tokio_rustls::rustls::{NoClientAuth, ServerConfig};
-use tokio_rustls::TlsAcceptor;
+#[cfg(feature = "incoming")]
+use tokio_rustls::{
+    rustls::internal::pemfile::{certs, pkcs8_private_keys},
+    rustls::{NoClientAuth, ServerConfig},
+    TlsAcceptor,
+};
 
 use anyhow::{bail, Result};
 
@@ -27,8 +30,29 @@ use slicesubsequence::*;
 mod stanzafilter;
 use stanzafilter::*;
 
+#[cfg(feature = "quic")]
+mod quic;
+#[cfg(feature = "quic")]
+use crate::quic::*;
+
+mod tls;
+use crate::tls::*;
+
+#[cfg(feature = "outgoing")]
+mod outgoing;
+#[cfg(feature = "outgoing")]
+use crate::outgoing::*;
+
+#[cfg(feature = "outgoing")]
+mod srv;
+#[cfg(feature = "outgoing")]
+use crate::srv::*;
+
 const IN_BUFFER_SIZE: usize = 8192;
 const OUT_BUFFER_SIZE: usize = 8192;
+
+const ALPN_XMPP_CLIENT: &[&[u8]] = &[b"xmpp-client"];
+const ALPN_XMPP_SERVER: &[&[u8]] = &[b"xmpp-server"];
 
 #[cfg(debug_assertions)]
 fn c2s(is_c2s: bool) -> &'static str {
@@ -55,7 +79,9 @@ macro_rules! debug {
 struct Config {
     tls_key: String,
     tls_cert: String,
-    listen: Vec<String>,
+    listen: Option<Vec<String>>,
+    quic_listen: Option<Vec<String>>,
+    outgoing_listen: Option<Vec<String>>,
     max_stanza_size_bytes: usize,
     s2s_target: String,
     c2s_target: String,
@@ -63,12 +89,11 @@ struct Config {
 }
 
 #[derive(Clone)]
-struct CloneableConfig {
+pub struct CloneableConfig {
     max_stanza_size_bytes: usize,
     s2s_target: String,
     c2s_target: String,
     proxy: bool,
-    acceptor: TlsAcceptor,
 }
 
 impl Config {
@@ -79,16 +104,16 @@ impl Config {
         Ok(toml::from_str(&input)?)
     }
 
-    fn get_cloneable_cfg(&self) -> Result<CloneableConfig> {
-        Ok(CloneableConfig {
+    fn get_cloneable_cfg(&self) -> CloneableConfig {
+        CloneableConfig {
             max_stanza_size_bytes: self.max_stanza_size_bytes,
             s2s_target: self.s2s_target.clone(),
             c2s_target: self.c2s_target.clone(),
             proxy: self.proxy,
-            acceptor: self.tls_acceptor()?,
-        })
+        }
     }
 
+    #[cfg(feature = "incoming")]
     fn tls_acceptor(&self) -> Result<TlsAcceptor> {
         let mut tls_key = pkcs8_private_keys(&mut BufReader::new(File::open(&self.tls_key)?)).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))?;
         if tls_key.is_empty() {
@@ -99,141 +124,60 @@ impl Config {
         let tls_cert = certs(&mut BufReader::new(File::open(&self.tls_cert)?)).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid cert"))?;
 
         let mut config = ServerConfig::new(NoClientAuth::new());
-        config.set_single_cert(tls_cert, tls_key).map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+        config.set_single_cert(tls_cert, tls_key)?;
         Ok(TlsAcceptor::from(Arc::new(config)))
     }
 }
 
+#[derive(PartialEq)]
+pub enum AllowedType {
+    ClientOnly,
+    ServerOnly,
+    Any,
+}
+
 fn to_str(buf: &[u8]) -> std::borrow::Cow<'_, str> {
-    //&str {
-    //std::str::from_utf8(buf).unwrap_or("[invalid utf-8]")
     String::from_utf8_lossy(buf)
 }
 
-async fn handle_connection(mut stream: tokio::net::TcpStream, client_addr: SocketAddr, local_addr: SocketAddr, config: CloneableConfig) -> Result<()> {
-    println!("INFO: {} connected", client_addr);
+async fn shuffle_rd_wr<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
+    in_rd: R,
+    in_wr: W,
+    config: CloneableConfig,
+    local_addr: SocketAddr,
+    client_addr: SocketAddr,
+    allowed_type: AllowedType,
+) -> Result<()> {
+    let filter = StanzaFilter::new(config.max_stanza_size_bytes);
+    shuffle_rd_wr_filter(in_rd, in_wr, config, local_addr, client_addr, allowed_type, filter).await
+}
 
-    let mut in_filter = StanzaFilter::new(config.max_stanza_size_bytes);
-
-    let direct_tls = {
-        // sooo... I don't think peek here can be used for > 1 byte without this timer
-        // craziness... can it? this could be switched to only peek 1 byte and assume
-        // a leading 0x16 is TLS, it would *probably* be ok ?
-        //let mut p = [0u8; 3];
-        let mut p = &mut in_filter.buf[0..3];
-        // wait up to 10 seconds until 3 bytes have been read
-        use std::time::{Duration, Instant};
-        let duration = Duration::from_secs(10);
-        let now = Instant::now();
-        loop {
-            let n = stream.peek(&mut p).await?;
-            if n == 3 {
-                break; // success
-            }
-            if n == 0 {
-                bail!("not enough bytes");
-            }
-            if Instant::now() - now > duration {
-                bail!("less than 3 bytes in 10 seconds, closed connection?");
-            }
-        }
-
-        /* TLS packet starts with a record "Hello" (0x16), followed by version
-         * (0x03 0x00-0x03) (RFC6101 A.1)
-         * This means we reject SSLv2 and lower, which is actually a good thing (RFC6176)
-         */
-        p[0] == 0x16 && p[1] == 0x03 && p[2] <= 0x03
-    };
-
-    println!("INFO: {} direct_tls: {}", client_addr, direct_tls);
-
-    // starttls
-    if !direct_tls {
-        let mut proceed_sent = false;
-
-        let (in_rd, mut in_wr) = stream.split();
-        // we naively read 1 byte at a time, which buffering significantly speeds up
-        let in_rd = tokio::io::BufReader::with_capacity(IN_BUFFER_SIZE, in_rd);
-        let mut in_rd = StanzaReader(in_rd);
-
-        while let Ok(Some(buf)) = in_rd.next(&mut in_filter).await {
-            debug!("received pre-tls stanza: {} '{}'", client_addr, to_str(&buf));
-            if buf.starts_with(b"<?xml ") {
-                debug!("> {} '{}'", client_addr, to_str(&buf));
-                in_wr.write_all(&buf).await?;
-                in_wr.flush().await?;
-            } else if buf.starts_with(b"<stream:stream ") {
-                // gajim seems to REQUIRE an id here...
-                let buf = if buf.contains_seq(b"id=") {
-                    buf.replace_first(b" id='", b" id='xmpp-proxy")
-                        .replace_first(br#" id=""#, br#" id="xmpp-proxy"#)
-                        .replace_first(b" to=", br#" bla toblala="#)
-                        .replace_first(b" from=", b" to=")
-                        .replace_first(br#" bla toblala="#, br#" from="#)
-                } else {
-                    buf.replace_first(b" to=", br#" bla toblala="#)
-                        .replace_first(b" from=", b" to=")
-                        .replace_first(br#" bla toblala="#, br#" id='xmpp-proxy' from="#)
-                };
-
-                debug!("> {} '{}'", client_addr, to_str(&buf));
-                in_wr.write_all(&buf).await?;
-
-                // ejabberd never sends <starttls/> with the first, only the second?
-                //let buf = br###"<features xmlns="http://etherx.jabber.org/streams"><starttls xmlns="urn:ietf:params:xml:ns:xmpp-tls"><required/></starttls></features>"###;
-                let buf = br###"<stream:features><starttls xmlns="urn:ietf:params:xml:ns:xmpp-tls"><required/></starttls></stream:features>"###;
-                debug!("> {} '{}'", client_addr, to_str(buf));
-                in_wr.write_all(buf).await?;
-                in_wr.flush().await?;
-            } else if buf.starts_with(b"<starttls ") {
-                let buf = br###"<proceed xmlns="urn:ietf:params:xml:ns:xmpp-tls" />"###;
-                debug!("> {} '{}'", client_addr, to_str(buf));
-                in_wr.write_all(buf).await?;
-                in_wr.flush().await?;
-                proceed_sent = true;
-                break;
-            } else {
-                bail!("bad pre-tls stanza: {}", to_str(&buf));
-            }
-        }
-        if !proceed_sent {
-            bail!("stream ended before open");
-        }
-    }
-
-    let stream = config.acceptor.accept(stream).await?;
-
-    let (in_rd, mut in_wr) = tokio::io::split(stream);
+async fn shuffle_rd_wr_filter<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
+    in_rd: R,
+    mut in_wr: W,
+    config: CloneableConfig,
+    local_addr: SocketAddr,
+    client_addr: SocketAddr,
+    allowed_type: AllowedType,
+    in_filter: StanzaFilter,
+) -> Result<()> {
     // we naively read 1 byte at a time, which buffering significantly speeds up
     let in_rd = tokio::io::BufReader::with_capacity(IN_BUFFER_SIZE, in_rd);
-    let mut in_rd = StanzaReader(in_rd);
 
     // now read to figure out client vs server
-    let (stream_open, is_c2s) = {
-        let mut stream_open = Vec::new();
-        let mut ret = None;
+    let (stream_open, is_c2s, mut in_rd, mut in_filter) = stream_preamble(StanzaReader(in_rd), client_addr, in_filter).await?;
 
-        while let Ok(Some(buf)) = in_rd.next(&mut in_filter).await {
-            debug!("received pre-<stream:stream> stanza: {} '{}'", client_addr, to_str(&buf));
-            if buf.starts_with(b"<?xml ") {
-                stream_open.extend_from_slice(buf);
-            } else if buf.starts_with(b"<stream:stream ") {
-                stream_open.extend_from_slice(buf);
-                //return (stream_open, stanza.contains(r#" xmlns="jabber:client""#) || stanza.contains(r#" xmlns='jabber:client'"#));
-                ret = Some((stream_open, buf.contains_seq(br#" xmlns="jabber:client""#) || buf.contains_seq(br#" xmlns='jabber:client'"#)));
-                break;
-            } else {
-                bail!("bad pre-<stream:stream> stanza: {}", to_str(&buf));
-            }
+    let target = if is_c2s {
+        if allowed_type == AllowedType::ServerOnly {
+            bail!("c2s requested when only s2s allowed");
         }
-        if ret.is_some() {
-            ret.unwrap()
-        } else {
-            bail!("stream ended before open");
+        config.c2s_target
+    } else {
+        if allowed_type == AllowedType::ClientOnly {
+            bail!("s2s requested when only c2s allowed");
         }
+        config.s2s_target
     };
-
-    let target = if is_c2s { config.c2s_target } else { config.s2s_target };
 
     println!("INFO: {} is_c2s: {}, target: {}", client_addr, is_c2s, target);
 
@@ -249,7 +193,6 @@ async fn handle_connection(mut stream: tokio::net::TcpStream, client_addr: Socke
          */
         // tokio AsyncWrite doesn't have write_fmt so have to go through this buffer for some crazy reason
         //write!(out_wr, "PROXY TCP{} {} {} {} {}\r\n", if client_addr.is_ipv4() { '4' } else {'6' }, client_addr.ip(), local_addr.ip(), client_addr.port(), local_addr.port())?;
-        use std::io::Write;
         write!(
             &mut in_filter.buf[0..],
             "PROXY TCP{} {} {} {} {}\r\n",
@@ -299,26 +242,25 @@ async fn handle_connection(mut stream: tokio::net::TcpStream, client_addr: Socke
     Ok(())
 }
 
-/*
-async fn handle_connection(mut stream: tokio::net::TcpStream, client_addr: SocketAddr, local_addr: SocketAddr, config: CloneableConfig) -> Result<()> {
-    Ok(())
-}
-*/
-fn spawn_listener(listener: TcpListener, config: CloneableConfig) -> JoinHandle<Result<()>> {
-    let local_addr = listener.local_addr().die("could not get local_addr?");
-    tokio::spawn(async move {
-        loop {
-            let (stream, client_addr) = listener.accept().await?;
-            let config = config.clone();
-            tokio::spawn(async move {
-                if let Err(e) = handle_connection(stream, client_addr, local_addr, config).await {
-                    eprintln!("ERROR: {} {}", client_addr, e);
-                }
-            });
+async fn stream_preamble<R: AsyncRead + Unpin>(mut in_rd: StanzaReader<R>, client_addr: SocketAddr, mut in_filter: StanzaFilter) -> Result<(Vec<u8>, bool, StanzaReader<R>, StanzaFilter)> {
+    let mut stream_open = Vec::new();
+    while let Ok(Some(buf)) = in_rd.next(&mut in_filter).await {
+        debug!("received pre-<stream:stream> stanza: {} '{}'", client_addr, to_str(&buf));
+        if buf.starts_with(b"<?xml ") {
+            stream_open.extend_from_slice(buf);
+        } else if buf.starts_with(b"<stream:stream ") {
+            stream_open.extend_from_slice(buf);
+            return Ok((
+                stream_open,
+                buf.contains_seq(br#" xmlns="jabber:client""#) || buf.contains_seq(br#" xmlns='jabber:client'"#),
+                in_rd,
+                in_filter,
+            ));
+        } else {
+            bail!("bad pre-<stream:stream> stanza: {}", to_str(&buf));
         }
-        #[allow(unreachable_code)]
-        Ok(())
-    })
+    }
+    bail!("stream ended before open");
 }
 
 #[tokio::main]
@@ -326,12 +268,28 @@ fn spawn_listener(listener: TcpListener, config: CloneableConfig) -> JoinHandle<
 async fn main() {
     let main_config = Config::parse(std::env::args_os().skip(1).next().unwrap_or(OsString::from("/etc/xmpp-proxy/xmpp-proxy.toml"))).die("invalid config file");
 
-    let config = main_config.get_cloneable_cfg().die("invalid cert/key ?");
+    let config = main_config.get_cloneable_cfg();
 
-    let mut handles = Vec::with_capacity(main_config.listen.len());
-    for listener in main_config.listen {
-        let listener = TcpListener::bind(&listener).await.die("cannot listen on port/interface");
-        handles.push(spawn_listener(listener, config.clone()));
+    let mut handles: Vec<JoinHandle<Result<()>>> = Vec::new();
+    #[cfg(feature = "incoming")]
+    if let Some(ref listeners) = main_config.listen {
+        let acceptor = main_config.tls_acceptor().die("invalid cert/key ?");
+        for listener in listeners {
+            handles.push(spawn_tls_listener(listener.parse().die("invalid listener address"), config.clone(), acceptor.clone()));
+        }
+    }
+    #[cfg(feature = "quic")]
+    if let Some(ref listeners) = main_config.quic_listen {
+        let quic_config = main_config.quic_server_config().die("invalid cert/key ?");
+        for listener in listeners {
+            handles.push(spawn_quic_listener(listener.parse().die("invalid listener address"), config.clone(), quic_config.clone()));
+        }
+    }
+    #[cfg(feature = "outgoing")]
+    if let Some(ref listeners) = main_config.outgoing_listen {
+        for listener in listeners {
+            handles.push(spawn_outgoing_listener(listener.parse().die("invalid listener address"), config.max_stanza_size_bytes));
+        }
     }
     futures::future::join_all(handles).await;
 }
