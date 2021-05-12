@@ -3,7 +3,7 @@ name = "xmpp-proxy"
 version = "1.0.0"
 authors = ["moparisthebest <admin@moparisthebest.com>"]
 
-description = "Reverse XMPP proxy."
+description = "XMPP reverse proxy and outgoing proxy"
 repository  = "https://code.moparisthebest.com/moparisthebest/xmpp-proxy"
 keywords    = ["xmpp", "proxy"]
 
@@ -49,5 +49,5 @@ default = ["incoming", "outgoing", "quic"]
 #default = ["outgoing"]
 #default = ["incoming"]
 incoming = ["tokio-rustls"]
-outgoing = ["trust-dns-resolver", "webpki-roots", "lazy_static", "tokio-rustls"]
+outgoing = ["tokio-rustls", "trust-dns-resolver", "webpki-roots", "lazy_static"]
 quic = ["quinn"]

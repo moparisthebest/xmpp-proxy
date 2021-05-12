@@ -1,8 +1,10 @@
 
-# interfaces to listen for external XMPP connections on
-listen = [ "0.0.0.0:5222", "0.0.0.0:5269" ]
+# interfaces to listen for reverse proxy STARTTLS/Direct TLS XMPP connections on, should be open to the internet
+incoming_listen = [ "0.0.0.0:5222", "0.0.0.0:5269" ]
+# interfaces to listen for reverse proxy QUIC XMPP connections on, should be open to the internet
 quic_listen = [ "0.0.0.0:443" ]
-outgoing_listen = [ "0.0.0.0:5252" ]
+# interfaces to listen for outgoing proxy TCP XMPP connections on, should be localhost
+outgoing_listen = [ "127.0.0.1:15270" ]
 
 # these ports shouldn't do any TLS, but should assume any connection from xmpp-proxy is secure
 # prosody module: https://modules.prosody.im/mod_secure_interfaces.html

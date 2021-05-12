@@ -15,14 +15,14 @@ pub async fn quic_connect(target: SocketAddr, server_name: &str, is_c2s: bool) -
     endpoint_builder.default_client_config(client_cfg);
     let (endpoint, _incoming) = endpoint_builder.bind(&bind_addr)?;
     // connect to server
-    let quinn::NewConnection { connection, .. } = endpoint.connect(&target, server_name).unwrap().await.unwrap();
+    let quinn::NewConnection { connection, .. } = endpoint.connect(&target, server_name).unwrap().await?;
     debug!("[client] connected: addr={}", connection.remote_address());
 
     if is_c2s {
-        let (wrt, rd) = connection.open_bi().await.unwrap();
+        let (wrt, rd) = connection.open_bi().await?;
         Ok((Box::new(wrt), Box::new(rd)))
     } else {
-        let wrt = connection.open_uni().await.unwrap();
+        let wrt = connection.open_uni().await?;
         Ok((Box::new(wrt), Box::new(NoopIo)))
     }
 }
