@@ -79,7 +79,7 @@ macro_rules! debug {
 struct Config {
     tls_key: String,
     tls_cert: String,
-    listen: Option<Vec<String>>,
+    incoming_listen: Option<Vec<String>>,
     quic_listen: Option<Vec<String>>,
     outgoing_listen: Option<Vec<String>>,
     max_stanza_size_bytes: usize,
@@ -272,7 +272,7 @@ async fn main() {
 
     let mut handles: Vec<JoinHandle<Result<()>>> = Vec::new();
     #[cfg(feature = "incoming")]
-    if let Some(ref listeners) = main_config.listen {
+    if let Some(ref listeners) = main_config.incoming_listen {
         let acceptor = main_config.tls_acceptor().die("invalid cert/key ?");
         for listener in listeners {
             handles.push(spawn_tls_listener(listener.parse().die("invalid listener address"), config.clone(), acceptor.clone()));

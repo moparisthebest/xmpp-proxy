@@ -44,7 +44,7 @@ impl XmppConnection {
         let ips = RESOLVER.lookup_ip(self.target.clone()).await?;
         debug!("trying 1 domain {}, SRV: {:?}", domain, self);
         for ip in ips.iter() {
-            debug!("trying domain {}, ip {}, SRV: {:?}", domain, ip, self);
+            debug!("trying domain {}, ip {}, is_c2s: {}, SRV: {:?}", domain, ip, is_c2s, self);
             match self.conn_type {
                 XmppConnectionType::StartTLS => match crate::starttls_connect(SocketAddr::new(ip, self.port), domain, is_c2s, &stream_open, &mut in_filter).await {
                     Ok((wr, rd)) => return Ok((wr, rd)),
