@@ -131,23 +131,9 @@ impl Config {
     }
 }
 
-#[derive(PartialEq)]
-pub enum AllowedType {
-    ClientOnly,
-    ServerOnly,
-    Any,
-}
-
-async fn shuffle_rd_wr<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
-    in_rd: R,
-    in_wr: W,
-    config: CloneableConfig,
-    local_addr: SocketAddr,
-    client_addr: SocketAddr,
-    allowed_type: AllowedType,
-) -> Result<()> {
+async fn shuffle_rd_wr<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(in_rd: R, in_wr: W, config: CloneableConfig, local_addr: SocketAddr, client_addr: SocketAddr) -> Result<()> {
     let filter = StanzaFilter::new(config.max_stanza_size_bytes);
-    shuffle_rd_wr_filter(in_rd, in_wr, config, local_addr, client_addr, allowed_type, filter).await
+    shuffle_rd_wr_filter(in_rd, in_wr, config, local_addr, client_addr, filter).await
 }
 
 async fn shuffle_rd_wr_filter<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
@@ -156,7 +142,6 @@ async fn shuffle_rd_wr_filter<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     config: CloneableConfig,
     local_addr: SocketAddr,
     client_addr: SocketAddr,
-    allowed_type: AllowedType,
     in_filter: StanzaFilter,
 ) -> Result<()> {
     // we naively read 1 byte at a time, which buffering significantly speeds up
@@ -165,17 +150,7 @@ async fn shuffle_rd_wr_filter<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     // now read to figure out client vs server
     let (stream_open, is_c2s, mut in_rd, mut in_filter) = stream_preamble(StanzaReader(in_rd), client_addr, in_filter).await?;
 
-    let target = if is_c2s {
-        if allowed_type == AllowedType::ServerOnly {
-            bail!("c2s requested when only s2s allowed");
-        }
-        config.c2s_target
-    } else {
-        if allowed_type == AllowedType::ClientOnly {
-            bail!("s2s requested when only c2s allowed");
-        }
-        config.s2s_target
-    };
+    let target = if is_c2s { config.c2s_target } else { config.s2s_target };
 
     println!("INFO: {} is_c2s: {}, target: {}", client_addr, is_c2s, target);
 

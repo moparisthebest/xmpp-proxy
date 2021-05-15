@@ -18,13 +18,8 @@ pub async fn quic_connect(target: SocketAddr, server_name: &str, is_c2s: bool) -
     let quinn::NewConnection { connection, .. } = endpoint.connect(&target, server_name).unwrap().await?;
     debug!("[client] connected: addr={}", connection.remote_address());
 
-    if is_c2s {
-        let (wrt, rd) = connection.open_bi().await?;
-        Ok((Box::new(wrt), Box::new(rd)))
-    } else {
-        let wrt = connection.open_uni().await?;
-        Ok((Box::new(wrt), Box::new(NoopIo)))
-    }
+    let (wrt, rd) = connection.open_bi().await?;
+    Ok((Box::new(wrt), Box::new(rd)))
 }
 
 impl Config {
@@ -86,25 +81,13 @@ pub fn spawn_quic_listener(local_addr: SocketAddr, config: CloneableConfig, serv
         tokio::spawn(async move {
             println!("INFO: {} quic connected", client_addr);
 
-            loop {
-                tokio::select! {
-                Some(Ok((wrt, rd))) = new_conn.bi_streams.next() => {
-                    let config = config.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = shuffle_rd_wr(rd, wrt, config, local_addr, client_addr, AllowedType::ClientOnly).await {
-                            eprintln!("ERROR: {} {}", client_addr, e);
-                        }
-                    });
-                },
-                Some(Ok(rd)) = new_conn.uni_streams.next() => {
-                    let config = config.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = shuffle_rd_wr(rd, NoopIo, config, local_addr, client_addr, AllowedType::ServerOnly).await {
-                            eprintln!("ERROR: {} {}", client_addr, e);
-                        }
-                    });
-                },
-                }
+            while let Some(Ok((wrt, rd))) = new_conn.bi_streams.next().await {
+                let config = config.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = shuffle_rd_wr(rd, wrt, config, local_addr, client_addr).await {
+                        eprintln!("ERROR: {} {}", client_addr, e);
+                    }
+                });
             }
         });
         #[allow(unreachable_code)]

@@ -170,26 +170,24 @@ pub async fn srv_connect(
         out_wr.flush().await?;
 
         let mut server_response = Vec::new();
-        if is_c2s {
-            // let's read to first <stream:stream to make sure we are successfully connected to a real XMPP server
-            let mut stream_received = false;
-            while let Ok(Some(buf)) = out_rd.next(&mut in_filter).await {
-                debug!("received pre-tls stanza: {} '{}'", domain, to_str(&buf));
-                if buf.starts_with(b"<?xml ") {
-                    server_response.extend_from_slice(&buf);
-                } else if buf.starts_with(b"<stream:stream ") {
-                    server_response.extend_from_slice(&buf);
-                    stream_received = true;
-                    break;
-                } else {
-                    debug!("bad pre-tls stanza: {}", to_str(&buf));
-                    break;
-                }
+        // let's read to first <stream:stream to make sure we are successfully connected to a real XMPP server
+        let mut stream_received = false;
+        while let Ok(Some(buf)) = out_rd.next(&mut in_filter).await {
+            debug!("received pre-tls stanza: {} '{}'", domain, to_str(&buf));
+            if buf.starts_with(b"<?xml ") {
+                server_response.extend_from_slice(&buf);
+            } else if buf.starts_with(b"<stream:stream ") {
+                server_response.extend_from_slice(&buf);
+                stream_received = true;
+                break;
+            } else {
+                debug!("bad pre-tls stanza: {}", to_str(&buf));
+                break;
             }
-            if !stream_received {
-                debug!("bad server response, going to next record");
-                continue;
-            }
+        }
+        if !stream_received {
+            debug!("bad server response, going to next record");
+            continue;
         }
 
         return Ok((Box::new(out_wr), out_rd, server_response));
