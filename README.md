@@ -132,3 +132,5 @@ To build a reverse proxy only, but supporting all of STARTTLS/TLS/QUIC, run: `ca
 
 ####  License
 GNU/AGPLv3 - Check LICENSE.md for details
+
+Thanks [rxml](https://github.com/horazont/rxml) for afl-fuzz seeds
