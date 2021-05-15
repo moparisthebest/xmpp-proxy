@@ -2,3 +2,5 @@
 **/*.rs.bk
 .idea
 **/*.kate-swp
+**/out/
+**/core.*

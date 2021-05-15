@@ -26,6 +26,16 @@ pub struct StanzaFilter {
     state: StanzaState,
 }
 
+#[inline(always)]
+fn checked_sub(i: usize, s: usize) -> Result<usize> {
+    // i.checked_sub(s).ok_or_else(||anyhow::anyhow!("invalid stanza"))
+    if s > i {
+        bail!("invalid stanza")
+    } else {
+        Ok(i - s)
+    }
+}
+
 impl StanzaFilter {
     pub fn new(buf_size: usize) -> StanzaFilter {
         StanzaFilter {
@@ -77,7 +87,7 @@ impl StanzaFilter {
                 _ => self.state = InsideTag,
             },
             InsideTagFirstChar => match b {
-                b'/' => self.tag_cnt -= 2,
+                b'/' => self.tag_cnt = checked_sub(self.tag_cnt, 2)?,
                 b'!' => self.state = ExclamationTag(self.cnt + 7), // 7 is length of b"[CDATA["
                 b'?' | b'>' | b'\'' | b'"' => bail!("illegal stanza: {}", to_str(&self.buf[..(self.cnt + 1)])),
                 _ => self.state = InsideTag,
@@ -87,7 +97,7 @@ impl StanzaFilter {
                     if self.buf[self.cnt - 1] == b'/' {
                         // state can't be InsideTag unless we are on at least the second character, so can't go out of range
                         // self-closing tag
-                        self.tag_cnt -= 1;
+                        self.tag_cnt = checked_sub(self.tag_cnt, 1)?;
                     }
                     if self.tag_cnt == 0 {
                         return self.stanza_end();
@@ -124,7 +134,7 @@ impl StanzaFilter {
                 if idx == self.cnt {
                     if self.last_equals(b"[CDATA[")? {
                         self.state = InsideCDATA;
-                        self.tag_cnt -= 1; // cdata not a tag
+                        self.tag_cnt = checked_sub(self.tag_cnt, 1)?; // cdata not a tag
                     } else {
                         bail!("illegal stanza: {}", to_str(&self.buf[..(self.cnt + 1)]));
                     }

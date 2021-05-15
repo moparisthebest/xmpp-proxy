@@ -30,6 +30,8 @@ use slicesubsequence::*;
 mod stanzafilter;
 use stanzafilter::*;
 
+use xmpp_proxy::to_str;
+
 #[cfg(feature = "quic")]
 mod quic;
 #[cfg(feature = "quic")]
@@ -134,10 +136,6 @@ pub enum AllowedType {
     ClientOnly,
     ServerOnly,
     Any,
-}
-
-fn to_str(buf: &[u8]) -> std::borrow::Cow<'_, str> {
-    String::from_utf8_lossy(buf)
 }
 
 async fn shuffle_rd_wr<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
