@@ -205,5 +205,5 @@ async fn handle_tls_connection(mut stream: tokio::net::TcpStream, client_addr: S
 
     let (in_rd, in_wr) = tokio::io::split(stream);
 
-    shuffle_rd_wr_filter(in_rd, in_wr, config, local_addr, client_addr, AllowedType::Any, in_filter).await
+    shuffle_rd_wr_filter(in_rd, in_wr, config, local_addr, client_addr, in_filter).await
 }
