@@ -12,7 +12,13 @@ use crate::stanzafilter::StanzaReader;
 use crate::*;
 
 lazy_static::lazy_static! {
-    static ref RESOLVER: TokioAsyncResolver = TokioAsyncResolver::tokio_from_system_conf().unwrap();
+    static ref RESOLVER: TokioAsyncResolver = make_resolver();
+}
+
+fn make_resolver() -> TokioAsyncResolver {
+    let (config, mut options) = trust_dns_resolver::system_conf::read_system_conf().unwrap();
+    options.ip_strategy = trust_dns_resolver::config::LookupIpStrategy::Ipv4AndIpv6;
+    TokioAsyncResolver::tokio(config, options).unwrap()
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -200,7 +206,15 @@ mod tests {
     use crate::srv::*;
     #[tokio::test]
     async fn srv() -> Result<()> {
-        get_xmpp_connections("burtrum.org", true).await?;
+        let domain = "moparisthebest.com";
+        let is_c2s = true;
+        for srv in get_xmpp_connections(domain, is_c2s).await? {
+            let ips = RESOLVER.lookup_ip(srv.target.clone()).await?;
+            debug!("trying 1 domain {}, SRV: {:?}", domain, srv);
+            for ip in ips.iter() {
+                debug!("trying domain {}, ip {}, is_c2s: {}, SRV: {:?}", domain, ip, is_c2s, srv);
+            }
+        }
         Ok(())
     }
 }
