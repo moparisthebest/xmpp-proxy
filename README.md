@@ -52,6 +52,7 @@ use the provided `xmpp-proxy.toml` configuration as-is.
 Edit `/etc/prosody/prosody.cfg.lua`, Add these to modules_enabled:
 ```
 "net_proxy";
+"secure_interfaces";
 "s2s_outgoing_proxy";
 ```
 Until prosody-modules is updated, use my new module [mod_s2s_outgoing_proxy.lua](https://www.moparisthebest.com/mod_s2s_outgoing_proxy.lua).
@@ -70,6 +71,9 @@ s2s_secure_auth = false
 
 -- xmpp-proxy outgoing is listening on this port, make all outgoing s2s connections directly to here
 s2s_outgoing_proxy = { "127.0.0.1", 15270 }
+
+-- trust connections coming from these IPs
+secure_interfaces = { "127.0.0.1", "::1" }
 
 -- handle PROXY protocol on these ports
 proxy_port_mappings = {
@@ -134,3 +138,8 @@ To build a reverse proxy only, but supporting all of STARTTLS/TLS/QUIC, run: `ca
 GNU/AGPLv3 - Check LICENSE.md for details
 
 Thanks [rxml](https://github.com/horazont/rxml) for afl-fuzz seeds
+
+#### todo
+  1. sasl external for s2s, initiating and recieving
+  2. better debug log output
+  3. websocket incoming and outgoing, maybe even for s2s
