@@ -15,7 +15,7 @@ pub async fn quic_connect(target: SocketAddr, server_name: &str, is_c2s: bool) -
     endpoint_builder.default_client_config(client_cfg);
     let (endpoint, _incoming) = endpoint_builder.bind(&bind_addr)?;
     // connect to server
-    let quinn::NewConnection { connection, .. } = endpoint.connect(&target, server_name).unwrap().await?;
+    let quinn::NewConnection { connection, .. } = endpoint.connect(&target, server_name)?.await?;
     debug!("[client] connected: addr={}", connection.remote_address());
 
     let (wrt, rd) = connection.open_bi().await?;
@@ -72,24 +72,27 @@ pub fn spawn_quic_listener(local_addr: SocketAddr, config: CloneableConfig, serv
     let mut endpoint_builder = Endpoint::builder();
     endpoint_builder.listen(server_config);
     let (_endpoint, mut incoming) = endpoint_builder.bind(&local_addr).die("cannot listen on port/interface");
-    // accept a single connection
     tokio::spawn(async move {
-        let incoming_conn = incoming.next().await.unwrap();
-        let mut new_conn = incoming_conn.await.unwrap();
-        let client_addr = new_conn.connection.remote_address();
-        let config = config.clone();
-        tokio::spawn(async move {
-            println!("INFO: {} quic connected", client_addr);
+        // when could this return None, do we quit?
+        while let Some(incoming_conn) = incoming.next().await {
+            let config = config.clone();
+            tokio::spawn(async move {
+                if let Ok(mut new_conn) = incoming_conn.await {
+                    let client_addr = new_conn.connection.remote_address();
+                    println!("INFO: {} quic connected", client_addr);
 
-            while let Some(Ok((wrt, rd))) = new_conn.bi_streams.next().await {
-                let config = config.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = shuffle_rd_wr(rd, wrt, config, local_addr, client_addr).await {
-                        eprintln!("ERROR: {} {}", client_addr, e);
+                    while let Some(Ok((wrt, rd))) = new_conn.bi_streams.next().await {
+                        let config = config.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = shuffle_rd_wr(rd, wrt, config, local_addr, client_addr).await {
+                                eprintln!("ERROR: {} {}", client_addr, e);
+                            }
+                        });
                     }
-                });
-            }
-        });
+                }
+            });
+        }
+        println!("INFO: quic listener shutting down, should never happen????");
         #[allow(unreachable_code)]
         Ok(())
     })
