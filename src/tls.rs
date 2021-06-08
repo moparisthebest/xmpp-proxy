@@ -9,15 +9,13 @@ lazy_static::lazy_static! {
         let mut config = ClientConfig::new();
         config.root_store.add_server_trust_anchors(&webpki_roots::TLS_SERVER_ROOTS);
         config.alpn_protocols.push(ALPN_XMPP_CLIENT[0].to_vec());
-        let config = TlsConnector::from(Arc::new(config));
-        config
+        TlsConnector::from(Arc::new(config))
     };
     static ref SERVER_TLS_CONFIG: TlsConnector = {
         let mut config = ClientConfig::new();
         config.root_store.add_server_trust_anchors(&webpki_roots::TLS_SERVER_ROOTS);
         config.alpn_protocols.push(ALPN_XMPP_SERVER[0].to_vec());
-        let config = TlsConnector::from(Arc::new(config));
-        config
+        TlsConnector::from(Arc::new(config))
     };
 }
 
@@ -59,9 +57,7 @@ pub async fn starttls_connect(
     trace!("starttls reading stream open {}", server_name);
     while let Ok(Some(buf)) = in_rd.next(&mut in_filter).await {
         trace!("received pre-tls stanza: {} '{}'", server_name, to_str(&buf));
-        if buf.starts_with(b"<?xml ") {
-            // ignore this
-        } else if buf.starts_with(b"<stream:stream ") {
+        if buf.starts_with(b"<?xml ") || buf.starts_with(b"<stream:stream ") {
             // ignore this
         } else if buf.starts_with(b"<stream:features") {
             // we send starttls regardless, it could have been stripped out, we don't do plaintext

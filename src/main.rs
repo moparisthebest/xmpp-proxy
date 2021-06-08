@@ -219,7 +219,7 @@ async fn stream_preamble<R: AsyncRead + Unpin>(mut in_rd: StanzaReader<R>, clien
 #[tokio::main]
 //#[tokio::main(flavor = "multi_thread", worker_threads = 10)]
 async fn main() {
-    let main_config = Config::parse(std::env::args_os().skip(1).next().unwrap_or(OsString::from("/etc/xmpp-proxy/xmpp-proxy.toml"))).die("invalid config file");
+    let main_config = Config::parse(std::env::args_os().nth(1).unwrap_or_else(|| OsString::from("/etc/xmpp-proxy/xmpp-proxy.toml"))).die("invalid config file");
 
     #[cfg(feature = "env_logger")]
     {

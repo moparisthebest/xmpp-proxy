@@ -1,3 +1,5 @@
+#![allow(clippy::upper_case_acronyms)]
+
 use anyhow::{bail, Result};
 
 use crate::stanzafilter::StanzaState::*;
@@ -169,7 +171,7 @@ impl StanzaFilter {
         self.cnt = 0;
         self.state = OutsideStanza;
         //trace!("cnt: {}, tag_cnt: {}, state: {:?}", self.cnt, self.tag_cnt, self.state);
-        return ret;
+        ret
     }
 
     fn last_equals(&self, needle: &[u8]) -> Result<bool> {
