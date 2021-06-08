@@ -1,3 +1,5 @@
+#![allow(clippy::upper_case_acronyms)]
+
 use std::net::SocketAddr;
 
 use trust_dns_resolver::error::ResolveError;
