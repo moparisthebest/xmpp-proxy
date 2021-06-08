@@ -155,7 +155,7 @@ impl StanzaFilter {
                 }
             }
         }
-        //println!("cnt: {}, tag_cnt: {}, state: {:?}", self.cnt, self.tag_cnt, self.state);
+        //trace!("cnt: {}, tag_cnt: {}, state: {:?}", self.cnt, self.tag_cnt, self.state);
         self.cnt += 1;
         if self.cnt == self.buf_size {
             bail!("stanza too big: {}", to_str(&self.buf));
@@ -168,7 +168,7 @@ impl StanzaFilter {
         self.tag_cnt = 0;
         self.cnt = 0;
         self.state = OutsideStanza;
-        //println!("cnt: {}, tag_cnt: {}, state: {:?}", self.cnt, self.tag_cnt, self.state);
+        //trace!("cnt: {}, tag_cnt: {}, state: {:?}", self.cnt, self.tag_cnt, self.state);
         return ret;
     }
 

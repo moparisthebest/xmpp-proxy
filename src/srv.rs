@@ -8,7 +8,6 @@ use anyhow::{bail, Result};
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
-use crate::stanzafilter::StanzaReader;
 use crate::*;
 
 lazy_static::lazy_static! {
@@ -54,16 +53,16 @@ impl XmppConnection {
             match self.conn_type {
                 XmppConnectionType::StartTLS => match crate::starttls_connect(SocketAddr::new(ip, self.port), domain, is_c2s, &stream_open, &mut in_filter).await {
                     Ok((wr, rd)) => return Ok((wr, rd)),
-                    Err(e) => println!("ERROR: starttls connection failed to IP {} from SRV {}, error: {}", ip, self.target, e),
+                    Err(e) => error!("starttls connection failed to IP {} from SRV {}, error: {}", ip, self.target, e),
                 },
                 XmppConnectionType::DirectTLS => match crate::tls_connect(SocketAddr::new(ip, self.port), domain, is_c2s).await {
                     Ok((wr, rd)) => return Ok((wr, rd)),
-                    Err(e) => println!("ERROR: direct tls connection failed to IP {} from SRV {}, error: {}", ip, self.target, e),
+                    Err(e) => error!("direct tls connection failed to IP {} from SRV {}, error: {}", ip, self.target, e),
                 },
                 #[cfg(feature = "quic")]
                 XmppConnectionType::QUIC => match crate::quic_connect(SocketAddr::new(ip, self.port), domain, is_c2s).await {
                     Ok((wr, rd)) => return Ok((wr, rd)),
-                    Err(e) => println!("ERROR: quic connection failed to IP {} from SRV {}, error: {}", ip, self.target, e),
+                    Err(e) => error!("quic connection failed to IP {} from SRV {}, error: {}", ip, self.target, e),
                 },
             }
         }
@@ -179,7 +178,7 @@ pub async fn srv_connect(
         // let's read to first <stream:stream to make sure we are successfully connected to a real XMPP server
         let mut stream_received = false;
         while let Ok(Some(buf)) = out_rd.next(&mut in_filter).await {
-            debug!("received pre-tls stanza: {} '{}'", domain, to_str(&buf));
+            trace!("received pre-tls stanza: {} '{}'", domain, to_str(&buf));
             if buf.starts_with(b"<?xml ") {
                 server_response.extend_from_slice(&buf);
             } else if buf.starts_with(b"<stream:stream ") {
@@ -187,7 +186,7 @@ pub async fn srv_connect(
                 stream_received = true;
                 break;
             } else {
-                debug!("bad pre-tls stanza: {}", to_str(&buf));
+                trace!("bad pre-tls stanza: {}", to_str(&buf));
                 break;
             }
         }

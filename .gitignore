@@ -4,3 +4,4 @@
 **/*.kate-swp
 **/out/
 **/core.*
+fuzz/target/

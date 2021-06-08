@@ -27,10 +27,7 @@ use anyhow::{bail, Result};
 mod slicesubsequence;
 use slicesubsequence::*;
 
-mod stanzafilter;
-use stanzafilter::*;
-
-use xmpp_proxy::to_str;
+pub use xmpp_proxy::*;
 
 #[cfg(feature = "quic")]
 mod quic;
@@ -56,27 +53,6 @@ const OUT_BUFFER_SIZE: usize = 8192;
 const ALPN_XMPP_CLIENT: &[&[u8]] = &[b"xmpp-client"];
 const ALPN_XMPP_SERVER: &[&[u8]] = &[b"xmpp-server"];
 
-#[cfg(debug_assertions)]
-fn c2s(is_c2s: bool) -> &'static str {
-    if is_c2s {
-        "c2s"
-    } else {
-        "s2s"
-    }
-}
-
-#[cfg(debug_assertions)]
-#[macro_export]
-macro_rules! debug {
-    ($($y:expr),+) => (println!($($y),+));
-}
-
-#[cfg(not(debug_assertions))]
-#[macro_export]
-macro_rules! debug {
-    ($($y:expr),+) => {};
-}
-
 #[derive(Deserialize)]
 struct Config {
     tls_key: String,
@@ -88,6 +64,10 @@ struct Config {
     s2s_target: String,
     c2s_target: String,
     proxy: bool,
+    #[cfg(feature = "env_logger")]
+    log_level: Option<String>,
+    #[cfg(feature = "env_logger")]
+    log_style: Option<String>,
 }
 
 #[derive(Clone)]
@@ -152,7 +132,7 @@ async fn shuffle_rd_wr_filter<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 
     let target = if is_c2s { config.c2s_target } else { config.s2s_target };
 
-    println!("INFO: {} is_c2s: {}, target: {}", client_addr, is_c2s, target);
+    info!("{} is_c2s: {}, target: {}", client_addr, is_c2s, target);
 
     let out_stream = tokio::net::TcpStream::connect(target).await?;
     let (mut out_rd, mut out_wr) = tokio::io::split(out_stream);
@@ -176,10 +156,10 @@ async fn shuffle_rd_wr_filter<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             local_addr.port()
         )?;
         let end_idx = &(&in_filter.buf[0..]).first_index_of(b"\n")? + 1;
-        debug!("< {} {} '{}'", client_addr, c2s(is_c2s), to_str(&in_filter.buf[0..end_idx]));
+        trace!("< {} {} '{}'", client_addr, c2s(is_c2s), to_str(&in_filter.buf[0..end_idx]));
         out_wr.write_all(&in_filter.buf[0..end_idx]).await?;
     }
-    debug!("< {} {} '{}'", client_addr, c2s(is_c2s), to_str(&stream_open));
+    trace!("< {} {} '{}'", client_addr, c2s(is_c2s), to_str(&stream_open));
     out_wr.write_all(&stream_open).await?;
     out_wr.flush().await?;
     drop(stream_open);
@@ -192,7 +172,7 @@ async fn shuffle_rd_wr_filter<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             match buf {
                 None => break,
                 Some(buf) => {
-                    debug!("< {} {} '{}'", client_addr, c2s(is_c2s), to_str(buf));
+                    trace!("< {} {} '{}'", client_addr, c2s(is_c2s), to_str(buf));
                     out_wr.write_all(buf).await?;
                     out_wr.flush().await?;
                 }
@@ -204,21 +184,21 @@ async fn shuffle_rd_wr_filter<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             if n == 0 {
                 break;
             }
-            debug!("> {} {} '{}'", client_addr, c2s(is_c2s), to_str(&out_buf[0..n]));
+            trace!("> {} {} '{}'", client_addr, c2s(is_c2s), to_str(&out_buf[0..n]));
             in_wr.write_all(&out_buf[0..n]).await?;
             in_wr.flush().await?;
         },
         }
     }
 
-    println!("INFO: {} disconnected", client_addr);
+    info!("{} disconnected", client_addr);
     Ok(())
 }
 
 async fn stream_preamble<R: AsyncRead + Unpin>(mut in_rd: StanzaReader<R>, client_addr: SocketAddr, mut in_filter: StanzaFilter) -> Result<(Vec<u8>, bool, StanzaReader<R>, StanzaFilter)> {
     let mut stream_open = Vec::new();
     while let Ok(Some(buf)) = in_rd.next(&mut in_filter).await {
-        debug!("received pre-<stream:stream> stanza: {} '{}'", client_addr, to_str(&buf));
+        trace!("received pre-<stream:stream> stanza: {} '{}'", client_addr, to_str(&buf));
         if buf.starts_with(b"<?xml ") {
             stream_open.extend_from_slice(buf);
         } else if buf.starts_with(b"<stream:stream ") {
@@ -240,6 +220,21 @@ async fn stream_preamble<R: AsyncRead + Unpin>(mut in_rd: StanzaReader<R>, clien
 //#[tokio::main(flavor = "multi_thread", worker_threads = 10)]
 async fn main() {
     let main_config = Config::parse(std::env::args_os().skip(1).next().unwrap_or(OsString::from("/etc/xmpp-proxy/xmpp-proxy.toml"))).die("invalid config file");
+
+    #[cfg(feature = "env_logger")]
+    {
+        use env_logger::{Builder, Env, Target};
+        let env = Env::default().filter_or("XMPP_PROXY_LOG_LEVEL", "info").write_style_or("XMPP_PROXY_LOG_STYLE", "never");
+        let mut builder = Builder::from_env(env);
+        builder.target(Target::Stdout);
+        if let Some(ref log_level) = main_config.log_level {
+            builder.parse_filters(log_level);
+        }
+        if let Some(ref log_style) = main_config.log_style {
+            builder.parse_write_style(log_style);
+        }
+        builder.init();
+    }
 
     let config = main_config.get_cloneable_cfg();
 
