@@ -28,6 +28,10 @@ die = "0.2"
 anyhow = "1.0"
 tokio = { version = "1.4", features = ["net", "rt", "rt-multi-thread", "macros", "io-util"] }
 
+# logging deps
+log = "0.4"
+env_logger = { version = "0.8", optional = true }
+
 # incoming deps
 tokio-rustls = { version = "0.22", optional = true }
 
@@ -41,7 +45,7 @@ trust-dns-resolver = { version = "0.20", optional = true }
 quinn = { version = "0.7", optional = true }
 
 [features]
-default = ["incoming", "outgoing", "quic"]
+default = ["incoming", "outgoing", "quic", "env_logger"]
 #default = ["incoming", "outgoing"]
 #default = ["incoming", "quic"]
 #default = ["outgoing", "quic"]

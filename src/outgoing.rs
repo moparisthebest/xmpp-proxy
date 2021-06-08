@@ -1,7 +1,7 @@
 use crate::*;
 
 async fn handle_outgoing_connection(stream: tokio::net::TcpStream, client_addr: SocketAddr, max_stanza_size_bytes: usize) -> Result<()> {
-    println!("INFO: out {} connected", client_addr);
+    info!("out {} connected", client_addr);
 
     let in_filter = StanzaFilter::new(max_stanza_size_bytes);
 
@@ -18,9 +18,9 @@ async fn handle_outgoing_connection(stream: tokio::net::TcpStream, client_addr: 
     // todo: unsure how legit changing to a string here is...
     let domain = to_str(stream_open.extract_between(b" to='", b"'").or_else(|_| stream_open.extract_between(b" to=\"", b"\""))?);
 
-    println!("INFO: out {} is_c2s: {}, domain: {}", client_addr, is_c2s, domain);
+    info!("out {} is_c2s: {}, domain: {}", client_addr, is_c2s, domain);
 
-    debug!("out < {} {} '{}'", client_addr, c2s(is_c2s), to_str(&stream_open));
+    trace!("out < {} {} '{}'", client_addr, c2s(is_c2s), to_str(&stream_open));
     let (mut out_wr, mut out_rd, stream_open) = srv_connect(&domain, is_c2s, &stream_open, &mut in_filter).await?;
     // send server response to client
     in_wr.write_all(&stream_open).await?;
@@ -35,7 +35,7 @@ async fn handle_outgoing_connection(stream: tokio::net::TcpStream, client_addr: 
             match buf {
                 None => break,
                 Some(buf) => {
-                    debug!("out < {} {} '{}'", domain, c2s(is_c2s), to_str(buf));
+                    trace!("out < {} {} '{}'", domain, c2s(is_c2s), to_str(buf));
                     in_wr.write_all(buf).await?;
                     in_wr.flush().await?;
                 }
@@ -47,14 +47,14 @@ async fn handle_outgoing_connection(stream: tokio::net::TcpStream, client_addr: 
             if n == 0 {
                 break;
             }
-            debug!("out > {} {} '{}'", domain, c2s(is_c2s), to_str(&out_buf[0..n]));
+            trace!("out > {} {} '{}'", domain, c2s(is_c2s), to_str(&out_buf[0..n]));
             out_wr.write_all(&out_buf[0..n]).await?;
             out_wr.flush().await?;
         },
         }
     }
 
-    println!("INFO: out {} disconnected", client_addr);
+    info!("out {} disconnected", client_addr);
     Ok(())
 }
 
@@ -65,7 +65,7 @@ pub fn spawn_outgoing_listener(local_addr: SocketAddr, max_stanza_size_bytes: us
             let (stream, client_addr) = listener.accept().await?;
             tokio::spawn(async move {
                 if let Err(e) = handle_outgoing_connection(stream, client_addr, max_stanza_size_bytes).await {
-                    eprintln!("ERROR: {} {}", client_addr, e);
+                    error!("{} {}", client_addr, e);
                 }
             });
         }

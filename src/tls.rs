@@ -47,7 +47,7 @@ pub async fn starttls_connect(
     let (in_rd, mut in_wr) = stream.split();
 
     // send the stream_open
-    debug!("starttls sending: {} '{}'", server_name, to_str(&stream_open));
+    trace!("starttls sending: {} '{}'", server_name, to_str(&stream_open));
     in_wr.write_all(&stream_open).await?;
     in_wr.flush().await?;
 
@@ -56,9 +56,9 @@ pub async fn starttls_connect(
     let mut in_rd = StanzaReader(in_rd);
     let mut proceed_received = false;
 
-    debug!("starttls reading stream open {}", server_name);
+    trace!("starttls reading stream open {}", server_name);
     while let Ok(Some(buf)) = in_rd.next(&mut in_filter).await {
-        debug!("received pre-tls stanza: {} '{}'", server_name, to_str(&buf));
+        trace!("received pre-tls stanza: {} '{}'", server_name, to_str(&buf));
         if buf.starts_with(b"<?xml ") {
             // ignore this
         } else if buf.starts_with(b"<stream:stream ") {
@@ -66,7 +66,7 @@ pub async fn starttls_connect(
         } else if buf.starts_with(b"<stream:features") {
             // we send starttls regardless, it could have been stripped out, we don't do plaintext
             let buf = br###"<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>"###;
-            debug!("> {} '{}'", server_name, to_str(buf));
+            trace!("> {} '{}'", server_name, to_str(buf));
             in_wr.write_all(buf).await?;
             in_wr.flush().await?;
         } else if buf.starts_with(b"<proceed ") {
@@ -100,7 +100,7 @@ pub fn spawn_tls_listener(local_addr: SocketAddr, config: CloneableConfig, accep
             let acceptor = acceptor.clone();
             tokio::spawn(async move {
                 if let Err(e) = handle_tls_connection(stream, client_addr, local_addr, config, acceptor).await {
-                    eprintln!("ERROR: {} {}", client_addr, e);
+                    error!("{} {}", client_addr, e);
                 }
             });
         }
@@ -111,7 +111,7 @@ pub fn spawn_tls_listener(local_addr: SocketAddr, config: CloneableConfig, accep
 
 #[cfg(feature = "incoming")]
 async fn handle_tls_connection(mut stream: tokio::net::TcpStream, client_addr: SocketAddr, local_addr: SocketAddr, config: CloneableConfig, acceptor: TlsAcceptor) -> Result<()> {
-    println!("INFO: {} connected", client_addr);
+    info!("{} connected", client_addr);
 
     let mut in_filter = StanzaFilter::new(config.max_stanza_size_bytes);
 
@@ -145,7 +145,7 @@ async fn handle_tls_connection(mut stream: tokio::net::TcpStream, client_addr: S
         p[0] == 0x16 && p[1] == 0x03 && p[2] <= 0x03
     };
 
-    println!("INFO: {} direct_tls: {}", client_addr, direct_tls);
+    info!("{} direct_tls: {}", client_addr, direct_tls);
 
     // starttls
     if !direct_tls {
@@ -157,9 +157,9 @@ async fn handle_tls_connection(mut stream: tokio::net::TcpStream, client_addr: S
         let mut in_rd = StanzaReader(in_rd);
 
         while let Ok(Some(buf)) = in_rd.next(&mut in_filter).await {
-            debug!("received pre-tls stanza: {} '{}'", client_addr, to_str(&buf));
+            trace!("received pre-tls stanza: {} '{}'", client_addr, to_str(&buf));
             if buf.starts_with(b"<?xml ") {
-                debug!("> {} '{}'", client_addr, to_str(&buf));
+                trace!("> {} '{}'", client_addr, to_str(&buf));
                 in_wr.write_all(&buf).await?;
                 in_wr.flush().await?;
             } else if buf.starts_with(b"<stream:stream ") {
@@ -176,18 +176,18 @@ async fn handle_tls_connection(mut stream: tokio::net::TcpStream, client_addr: S
                         .replace_first(br#" bla toblala="#, br#" id='xmpp-proxy' from="#)
                 };
 
-                debug!("> {} '{}'", client_addr, to_str(&buf));
+                trace!("> {} '{}'", client_addr, to_str(&buf));
                 in_wr.write_all(&buf).await?;
 
                 // ejabberd never sends <starttls/> with the first, only the second?
                 //let buf = br###"<features xmlns="http://etherx.jabber.org/streams"><starttls xmlns="urn:ietf:params:xml:ns:xmpp-tls"><required/></starttls></features>"###;
                 let buf = br###"<stream:features><starttls xmlns="urn:ietf:params:xml:ns:xmpp-tls"><required/></starttls></stream:features>"###;
-                debug!("> {} '{}'", client_addr, to_str(buf));
+                trace!("> {} '{}'", client_addr, to_str(buf));
                 in_wr.write_all(buf).await?;
                 in_wr.flush().await?;
             } else if buf.starts_with(b"<starttls ") {
                 let buf = br###"<proceed xmlns="urn:ietf:params:xml:ns:xmpp-tls" />"###;
-                debug!("> {} '{}'", client_addr, to_str(buf));
+                trace!("> {} '{}'", client_addr, to_str(buf));
                 in_wr.write_all(buf).await?;
                 in_wr.flush().await?;
                 proceed_sent = true;

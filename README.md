@@ -65,7 +65,6 @@ interfaces = { "127.0.0.1" }
 -- we don't need prosody doing any encryption, xmpp-proxy does this now
 -- these are likely set to true somewhere in your file, find them, make them false
 -- you can also remove all certificates from your config
-c2s_require_encryption = false
 s2s_require_encryption = false
 s2s_secure_auth = false
 
@@ -140,6 +139,6 @@ GNU/AGPLv3 - Check LICENSE.md for details
 Thanks [rxml](https://github.com/horazont/rxml) for afl-fuzz seeds
 
 #### todo
-  1. sasl external for s2s, initiating and recieving
+  1. sasl external for s2s, initiating and receiving
   2. better debug log output
   3. websocket incoming and outgoing, maybe even for s2s
