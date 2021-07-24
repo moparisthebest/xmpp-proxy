@@ -78,21 +78,23 @@ pub fn spawn_quic_listener(local_addr: SocketAddr, config: CloneableConfig, serv
             let config = config.clone();
             tokio::spawn(async move {
                 if let Ok(mut new_conn) = incoming_conn.await {
-                    let client_addr = new_conn.connection.remote_address();
-                    info!("{} quic connected", client_addr);
+                    let client_addr = crate::Context::new("quic-in", new_conn.connection.remote_address());
+                    info!("{} connected new connection", client_addr.log_from());
 
                     while let Some(Ok((wrt, rd))) = new_conn.bi_streams.next().await {
                         let config = config.clone();
+                        let mut client_addr = client_addr.clone();
+                        info!("{} connected new stream", client_addr.log_from());
                         tokio::spawn(async move {
-                            if let Err(e) = shuffle_rd_wr(rd, wrt, config, local_addr, client_addr).await {
-                                error!("{} {}", client_addr, e);
+                            if let Err(e) = shuffle_rd_wr(rd, wrt, config, local_addr, &mut client_addr).await {
+                                error!("{} {}", client_addr.log_from(), e);
                             }
                         });
                     }
                 }
             });
         }
-        info!("quic listener shutting down, should never happen????");
+        error!("quic listener shutting down, should never happen????");
         #[allow(unreachable_code)]
         Ok(())
     })
