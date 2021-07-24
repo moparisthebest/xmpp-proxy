@@ -95,8 +95,9 @@ pub fn spawn_tls_listener(local_addr: SocketAddr, config: CloneableConfig, accep
             let config = config.clone();
             let acceptor = acceptor.clone();
             tokio::spawn(async move {
-                if let Err(e) = handle_tls_connection(stream, client_addr, local_addr, config, acceptor).await {
-                    error!("{} {}", client_addr, e);
+                let mut client_addr = Context::new("tcp-in", client_addr);
+                if let Err(e) = handle_tls_connection(stream, &mut client_addr, local_addr, config, acceptor).await {
+                    error!("{} {}", client_addr.log_from(), e);
                 }
             });
         }
@@ -106,8 +107,8 @@ pub fn spawn_tls_listener(local_addr: SocketAddr, config: CloneableConfig, accep
 }
 
 #[cfg(feature = "incoming")]
-async fn handle_tls_connection(mut stream: tokio::net::TcpStream, client_addr: SocketAddr, local_addr: SocketAddr, config: CloneableConfig, acceptor: TlsAcceptor) -> Result<()> {
-    info!("{} connected", client_addr);
+async fn handle_tls_connection(mut stream: tokio::net::TcpStream, client_addr: &mut Context<'_>, local_addr: SocketAddr, config: CloneableConfig, acceptor: TlsAcceptor) -> Result<()> {
+    info!("{} connected", client_addr.log_from());
 
     let mut in_filter = StanzaFilter::new(config.max_stanza_size_bytes);
 
@@ -141,7 +142,8 @@ async fn handle_tls_connection(mut stream: tokio::net::TcpStream, client_addr: S
         p[0] == 0x16 && p[1] == 0x03 && p[2] <= 0x03
     };
 
-    info!("{} direct_tls: {}", client_addr, direct_tls);
+    client_addr.set_proto(if direct_tls { "directtls-in" } else { "starttls-in" });
+    info!("{} direct_tls sniffed", client_addr.log_from());
 
     // starttls
     if !direct_tls {
@@ -153,9 +155,9 @@ async fn handle_tls_connection(mut stream: tokio::net::TcpStream, client_addr: S
         let mut in_rd = StanzaReader(in_rd);
 
         while let Ok(Some(buf)) = in_rd.next(&mut in_filter).await {
-            trace!("received pre-tls stanza: {} '{}'", client_addr, to_str(&buf));
+            trace!("{} received pre-tls stanza: '{}'", client_addr.log_from(), to_str(&buf));
             if buf.starts_with(b"<?xml ") {
-                trace!("> {} '{}'", client_addr, to_str(&buf));
+                trace!("{} '{}'", client_addr.log_to(), to_str(&buf));
                 in_wr.write_all(&buf).await?;
                 in_wr.flush().await?;
             } else if buf.starts_with(b"<stream:stream ") {
@@ -172,18 +174,18 @@ async fn handle_tls_connection(mut stream: tokio::net::TcpStream, client_addr: S
                         .replace_first(br#" bla toblala="#, br#" id='xmpp-proxy' from="#)
                 };
 
-                trace!("> {} '{}'", client_addr, to_str(&buf));
+                trace!("{} '{}'", client_addr.log_to(), to_str(&buf));
                 in_wr.write_all(&buf).await?;
 
                 // ejabberd never sends <starttls/> with the first, only the second?
                 //let buf = br###"<features xmlns="http://etherx.jabber.org/streams"><starttls xmlns="urn:ietf:params:xml:ns:xmpp-tls"><required/></starttls></features>"###;
                 let buf = br###"<stream:features><starttls xmlns="urn:ietf:params:xml:ns:xmpp-tls"><required/></starttls></stream:features>"###;
-                trace!("> {} '{}'", client_addr, to_str(buf));
+                trace!("{} '{}'", client_addr.log_to(), to_str(buf));
                 in_wr.write_all(buf).await?;
                 in_wr.flush().await?;
             } else if buf.starts_with(b"<starttls ") {
                 let buf = br###"<proceed xmlns="urn:ietf:params:xml:ns:xmpp-tls" />"###;
-                trace!("> {} '{}'", client_addr, to_str(buf));
+                trace!("{} '{}'", client_addr.log_to(), to_str(buf));
                 in_wr.write_all(buf).await?;
                 in_wr.flush().await?;
                 proceed_sent = true;

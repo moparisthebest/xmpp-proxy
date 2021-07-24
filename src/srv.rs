@@ -46,29 +46,30 @@ impl XmppConnection {
         is_c2s: bool,
         stream_open: &[u8],
         mut in_filter: &mut crate::StanzaFilter,
-    ) -> Result<(Box<dyn AsyncWrite + Unpin + Send>, Box<dyn AsyncRead + Unpin + Send>)> {
+        client_addr: &mut Context<'_>,
+    ) -> Result<(Box<dyn AsyncWrite + Unpin + Send>, Box<dyn AsyncRead + Unpin + Send>, SocketAddr, &'static str)> {
+        debug!("{} attempting connection to SRV: {:?}", client_addr.log_from(), self);
         // todo: need to set options to Ipv4AndIpv6
         let ips = RESOLVER.lookup_ip(self.target.clone()).await?;
-        debug!("trying 1 domain {}, SRV: {:?}", domain, self);
         for ip in ips.iter() {
-            debug!("trying domain {}, ip {}, is_c2s: {}, SRV: {:?}", domain, ip, is_c2s, self);
+            let to_addr = SocketAddr::new(ip, self.port);
+            debug!("{} trying ip {}", client_addr.log_from(), to_addr);
             match self.conn_type {
-                XmppConnectionType::StartTLS => match crate::starttls_connect(SocketAddr::new(ip, self.port), domain, is_c2s, &stream_open, &mut in_filter).await {
-                    Ok((wr, rd)) => return Ok((wr, rd)),
-                    Err(e) => error!("starttls connection failed to IP {} from SRV {}, error: {}", ip, self.target, e),
+                XmppConnectionType::StartTLS => match crate::starttls_connect(to_addr, domain, is_c2s, &stream_open, &mut in_filter).await {
+                    Ok((wr, rd)) => return Ok((wr, rd, to_addr, "starttls-out")),
+                    Err(e) => error!("starttls connection failed to IP {} from SRV {}, error: {}", to_addr, self.target, e),
                 },
-                XmppConnectionType::DirectTLS => match crate::tls_connect(SocketAddr::new(ip, self.port), domain, is_c2s).await {
-                    Ok((wr, rd)) => return Ok((wr, rd)),
-                    Err(e) => error!("direct tls connection failed to IP {} from SRV {}, error: {}", ip, self.target, e),
+                XmppConnectionType::DirectTLS => match crate::tls_connect(to_addr, domain, is_c2s).await {
+                    Ok((wr, rd)) => return Ok((wr, rd, to_addr, "directtls-out")),
+                    Err(e) => error!("direct tls connection failed to IP {} from SRV {}, error: {}", to_addr, self.target, e),
                 },
                 #[cfg(feature = "quic")]
-                XmppConnectionType::QUIC => match crate::quic_connect(SocketAddr::new(ip, self.port), domain, is_c2s).await {
-                    Ok((wr, rd)) => return Ok((wr, rd)),
-                    Err(e) => error!("quic connection failed to IP {} from SRV {}, error: {}", ip, self.target, e),
+                XmppConnectionType::QUIC => match crate::quic_connect(to_addr, domain, is_c2s).await {
+                    Ok((wr, rd)) => return Ok((wr, rd, to_addr, "quic-out")),
+                    Err(e) => error!("quic connection failed to IP {} from SRV {}, error: {}", to_addr, self.target, e),
                 },
             }
         }
-        debug!("trying 2 domain {}, SRV: {:?}", domain, self);
         bail!("cannot connect to any IPs for SRV: {}", self.target)
     }
 }
@@ -160,19 +161,23 @@ pub async fn srv_connect(
     is_c2s: bool,
     stream_open: &[u8],
     mut in_filter: &mut crate::StanzaFilter,
+    client_addr: &mut Context<'_>,
 ) -> Result<(Box<dyn AsyncWrite + Unpin + Send>, StanzaReader<tokio::io::BufReader<Box<dyn AsyncRead + Unpin + Send>>>, Vec<u8>)> {
     for srv in get_xmpp_connections(&domain, is_c2s).await? {
-        debug!("main srv: {:?}", srv);
-        let connect = srv.connect(&domain, is_c2s, &stream_open, &mut in_filter).await;
+        let connect = srv.connect(&domain, is_c2s, &stream_open, &mut in_filter, client_addr).await;
         if connect.is_err() {
             continue;
         }
-        let (mut out_wr, out_rd) = connect.unwrap();
-        debug!("main srv out: {:?}", srv);
+        let (mut out_wr, out_rd, to_addr, proto) = connect.unwrap();
+        // if any of these ? returns early with an Err, these will stay set, I think that's ok though, the connection will be closed
+        client_addr.set_proto(proto);
+        client_addr.set_to_addr(to_addr);
+        debug!("{} connected", client_addr.log_from());
 
         // we naively read 1 byte at a time, which buffering significantly speeds up
         let mut out_rd = StanzaReader(tokio::io::BufReader::with_capacity(crate::IN_BUFFER_SIZE, out_rd));
 
+        trace!("{} '{}'", client_addr.log_from(), to_str(&stream_open));
         out_wr.write_all(&stream_open).await?;
         out_wr.flush().await?;
 
@@ -180,7 +185,7 @@ pub async fn srv_connect(
         // let's read to first <stream:stream to make sure we are successfully connected to a real XMPP server
         let mut stream_received = false;
         while let Ok(Some(buf)) = out_rd.next(&mut in_filter).await {
-            trace!("received pre-tls stanza: {} '{}'", domain, to_str(&buf));
+            trace!("{} received pre-tls stanza: '{}'", client_addr.log_to(), to_str(&buf));
             if buf.starts_with(b"<?xml ") {
                 server_response.extend_from_slice(&buf);
             } else if buf.starts_with(b"<stream:stream ") {
@@ -188,12 +193,13 @@ pub async fn srv_connect(
                 stream_received = true;
                 break;
             } else {
-                trace!("bad pre-tls stanza: {}", to_str(&buf));
+                trace!("{} bad pre-tls stanza: {}", client_addr.log_to(), to_str(&buf));
                 break;
             }
         }
         if !stream_received {
-            debug!("bad server response, going to next record");
+            debug!("{} bad server response, going to next record", client_addr.log_to());
+            client_addr.set_proto("unk-out");
             continue;
         }
 
@@ -211,9 +217,9 @@ mod tests {
         let is_c2s = true;
         for srv in get_xmpp_connections(domain, is_c2s).await? {
             let ips = RESOLVER.lookup_ip(srv.target.clone()).await?;
-            debug!("trying 1 domain {}, SRV: {:?}", domain, srv);
+            println!("trying 1 domain {}, SRV: {:?}", domain, srv);
             for ip in ips.iter() {
-                debug!("trying domain {}, ip {}, is_c2s: {}, SRV: {:?}", domain, ip, is_c2s, srv);
+                println!("trying domain {}, ip {}, is_c2s: {}, SRV: {:?}", domain, ip, is_c2s, srv);
             }
         }
         Ok(())

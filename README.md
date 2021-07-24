@@ -140,5 +140,4 @@ Thanks [rxml](https://github.com/horazont/rxml) for afl-fuzz seeds
 
 #### todo
   1. sasl external for s2s, initiating and receiving
-  2. better debug log output
-  3. websocket incoming and outgoing, maybe even for s2s
+  2. websocket incoming and outgoing, maybe even for s2s
