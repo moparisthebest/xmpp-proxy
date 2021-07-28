@@ -29,9 +29,11 @@ impl<T: PartialEq + Clone> SliceSubsequence<T> for &[T] {
     }
 
     fn first_index_of(&self, needle: &[T]) -> Result<usize> {
-        for i in 0..self.len() - needle.len() + 1 {
-            if self[i..i + needle.len()] == needle[..] {
-                return Ok(i);
+        if self.len() >= needle.len() {
+            for i in 0..self.len() - needle.len() + 1 {
+                if self[i..i + needle.len()] == needle[..] {
+                    return Ok(i);
+                }
             }
         }
         Err(anyhow!("not found"))

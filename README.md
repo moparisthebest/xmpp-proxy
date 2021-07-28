@@ -3,12 +3,13 @@
 [![Build Status](https://ci.moparisthe.best/job/moparisthebest/job/xmpp-proxy/job/master/badge/icon%3Fstyle=plastic)](https://ci.moparisthe.best/job/moparisthebest/job/xmpp-proxy/job/master/)
 
 xmpp-proxy is a reverse proxy and outgoing proxy for XMPP servers and clients, providing STARTTLS, 
-[Direct TLS](https://xmpp.org/extensions/xep-0368.html), and [QUIC](https://datatracker.ietf.org/doc/html/draft-ietf-quic-transport)
-connectivity to plain-text XMPP servers and clients and limiting stanza sizes without an XML parser.
+[Direct TLS](https://xmpp.org/extensions/xep-0368.html), [QUIC](https://datatracker.ietf.org/doc/html/draft-ietf-quic-transport),
+and [WebSocket](https://datatracker.ietf.org/doc/html/rfc7395) connectivity to plain-text XMPP servers and clients and
+limiting stanza sizes without an XML parser.
 
 xmpp-proxy in reverse proxy (incoming) mode will:
   1. listen on any number of interfaces/ports
-  2. accept any STARTTLS, Direct TLS, or QUIC c2s or s2s connections from the internet
+  2. accept any STARTTLS, Direct TLS, QUIC, or WebSocket c2s or s2s connections from the internet
   3. terminate TLS
   4. connect them to a local real XMPP server over plain-text TCP
   5. send the [PROXY protocol](https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt) v1 header if configured, so the
@@ -125,10 +126,12 @@ s2s_ports = {15268}
 If you are a grumpy power user who wants to build xmpp-proxy with exactly the features you want, nothing less, nothing
 more, this section is for you!
 
-xmpp-proxy has 3 compile-time features:
+xmpp-proxy has 5 compile-time features:
   1. `incoming` - enables `incoming_listen` config option for reverse proxy STARTTLS/TLS
   2. `outgoing` - enables `outgoing_listen` config option for outgoing proxy STARTTLS/TLS
   3. `quic` - enables `quic_listen` config option for reverse proxy QUIC, and QUIC support for `outgoing` if it is enabled
+  4. `websocket` - enables `websocket_listen` config option for reverse proxy WebSocket
+  5. `logging` - enables configurable logging
 
 So to build only supporting reverse proxy STARTTLS/TLS, no QUIC, run: `cargo build --release --no-default-features --features incoming`
 To build a reverse proxy only, but supporting all of STARTTLS/TLS/QUIC, run: `cargo build --release --no-default-features --features incoming,quic`
@@ -140,4 +143,5 @@ Thanks [rxml](https://github.com/horazont/rxml) for afl-fuzz seeds
 
 #### todo
   1. sasl external for s2s, initiating and receiving
-  2. websocket incoming and outgoing, maybe even for s2s
+  2. websocket outgoing
+  3. XEP for XMPP-over-QUIC and XMPP-S2S-over-WebSocket

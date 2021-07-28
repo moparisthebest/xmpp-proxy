@@ -23,6 +23,7 @@ enum StanzaState {
 pub struct StanzaFilter {
     buf_size: usize,
     pub buf: Vec<u8>,
+    end_of_first_tag: usize,
     cnt: usize,
     tag_cnt: usize,
     state: StanzaState,
@@ -43,6 +44,7 @@ impl StanzaFilter {
         StanzaFilter {
             buf_size,
             buf: vec![0u8; buf_size],
+            end_of_first_tag: 0,
             cnt: 0,
             tag_cnt: 0,
             state: OutsideStanza,
@@ -96,6 +98,9 @@ impl StanzaFilter {
             },
             InsideTag => match b {
                 b'>' => {
+                    if self.end_of_first_tag == 0 {
+                        self.end_of_first_tag = self.cnt;
+                    }
                     if self.buf[self.cnt - 1] == b'/' {
                         // state can't be InsideTag unless we are on at least the second character, so can't go out of range
                         // self-closing tag
@@ -150,6 +155,9 @@ impl StanzaFilter {
             EndStream => {
                 if b == b'>' {
                     if self.last_equals(b"</stream:stream>")? {
+                        if self.end_of_first_tag == 0 {
+                            self.end_of_first_tag = self.cnt;
+                        }
                         return self.stanza_end();
                     } else {
                         bail!("illegal stanza: {}", to_str(&self.buf[..(self.cnt + 1)]));
@@ -205,6 +213,23 @@ impl<T: tokio::io::AsyncRead + Unpin> StanzaReader<T> {
             }
         }
     }
+
+    #[cfg(feature = "websocket")]
+    pub async fn next_eoft<'a>(&'a mut self, filter: &'a mut StanzaFilter) -> Result<Option<(&'a [u8], usize)>> {
+        use tokio::io::AsyncReadExt;
+
+        loop {
+            let n = self.0.read(filter.current_buf()).await?;
+            if n == 0 {
+                return Ok(None);
+            }
+            if let Some(idx) = filter.process_next_byte_idx()? {
+                let end_of_first_tag = filter.end_of_first_tag;
+                filter.end_of_first_tag = 0;
+                return Ok(Some((&filter.buf[0..idx], end_of_first_tag)));
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -226,7 +251,6 @@ mod tests {
     async fn process_next_byte() -> Result<()> {
         let mut filter = StanzaFilter::new(262_144);
 
-        //todo: <x a='/>'>This is going to be fun.</x>
         assert_eq!(
             StanzaReader(Cursor::new(
                 br###"
