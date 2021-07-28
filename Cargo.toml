@@ -45,8 +45,11 @@ trust-dns-resolver = { version = "0.20", optional = true }
 # quic deps
 quinn = { version = "0.7", optional = true }
 
+# websocket deps
+tokio-tungstenite = { version = "0.14", optional = true }
+
 [features]
-default = ["incoming", "outgoing", "quic", "logging"]
+default = ["incoming", "outgoing", "quic", "websocket", "logging"]
 #default = ["incoming", "outgoing"]
 #default = ["incoming", "quic"]
 #default = ["outgoing", "quic"]
@@ -56,4 +59,5 @@ default = ["incoming", "outgoing", "quic", "logging"]
 incoming = ["tokio-rustls"]
 outgoing = ["tokio-rustls", "trust-dns-resolver", "webpki-roots", "lazy_static"]
 quic = ["quinn"]
+websocket = ["tokio-tungstenite"]
 logging = ["rand", "env_logger"]

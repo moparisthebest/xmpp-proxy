@@ -11,7 +11,7 @@ use die::Die;
 
 use serde_derive::Deserialize;
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
@@ -47,6 +47,11 @@ mod srv;
 #[cfg(feature = "outgoing")]
 use crate::srv::*;
 
+#[cfg(feature = "websocket")]
+mod websocket;
+#[cfg(feature = "websocket")]
+use crate::websocket::*;
+
 const IN_BUFFER_SIZE: usize = 8192;
 const OUT_BUFFER_SIZE: usize = 8192;
 
@@ -59,6 +64,7 @@ struct Config {
     tls_cert: String,
     incoming_listen: Option<Vec<String>>,
     quic_listen: Option<Vec<String>>,
+    websocket_listen: Option<Vec<String>>,
     outgoing_listen: Option<Vec<String>>,
     max_stanza_size_bytes: usize,
     s2s_target: SocketAddr,
@@ -89,8 +95,8 @@ impl Config {
     fn get_cloneable_cfg(&self) -> CloneableConfig {
         CloneableConfig {
             max_stanza_size_bytes: self.max_stanza_size_bytes,
-            s2s_target: self.s2s_target.clone(),
-            c2s_target: self.c2s_target.clone(),
+            s2s_target: self.s2s_target,
+            c2s_target: self.c2s_target,
             proxy: self.proxy,
         }
     }
@@ -130,38 +136,7 @@ async fn shuffle_rd_wr_filter<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     // now read to figure out client vs server
     let (stream_open, is_c2s, mut in_rd, mut in_filter) = stream_preamble(StanzaReader(in_rd), &client_addr, in_filter).await?;
 
-    let target = if is_c2s { config.c2s_target } else { config.s2s_target };
-    client_addr.set_to_addr(target);
-    client_addr.set_c2s_stream_open(is_c2s, &stream_open);
-
-    let out_stream = tokio::net::TcpStream::connect(target).await?;
-    let (mut out_rd, mut out_wr) = tokio::io::split(out_stream);
-
-    if config.proxy {
-        /*
-        https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt
-        PROXY TCP4 255.255.255.255 255.255.255.255 65535 65535\r\n
-        PROXY TCP6 ffff:f...f:ffff ffff:f...f:ffff 65535 65535\r\n
-        PROXY TCP6 SOURCE_IP DEST_IP SOURCE_PORT DEST_PORT\r\n
-         */
-        // tokio AsyncWrite doesn't have write_fmt so have to go through this buffer for some crazy reason
-        //write!(out_wr, "PROXY TCP{} {} {} {} {}\r\n", if client_addr.is_ipv4() { '4' } else {'6' }, client_addr.ip(), local_addr.ip(), client_addr.port(), local_addr.port())?;
-        write!(
-            &mut in_filter.buf[0..],
-            "PROXY TCP{} {} {} {} {}\r\n",
-            if client_addr.client_addr().is_ipv4() { '4' } else { '6' },
-            client_addr.client_addr().ip(),
-            local_addr.ip(),
-            client_addr.client_addr().port(),
-            local_addr.port()
-        )?;
-        let end_idx = &(&in_filter.buf[0..]).first_index_of(b"\n")? + 1;
-        trace!("{} '{}'", client_addr.log_from(), to_str(&in_filter.buf[0..end_idx]));
-        out_wr.write_all(&in_filter.buf[0..end_idx]).await?;
-    }
-    trace!("{} '{}'", client_addr.log_from(), to_str(&stream_open));
-    out_wr.write_all(&stream_open).await?;
-    out_wr.flush().await?;
+    let (mut out_rd, mut out_wr) = open_incoming(config, local_addr, client_addr, &stream_open, is_c2s, &mut in_filter).await?;
     drop(stream_open);
 
     let mut out_buf = [0u8; OUT_BUFFER_SIZE];
@@ -193,6 +168,49 @@ async fn shuffle_rd_wr_filter<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 
     info!("{} disconnected", client_addr.log_from());
     Ok(())
+}
+
+async fn open_incoming(
+    config: CloneableConfig,
+    local_addr: SocketAddr,
+    client_addr: &mut Context<'_>,
+    stream_open: &[u8],
+    is_c2s: bool,
+    in_filter: &mut StanzaFilter,
+) -> Result<(ReadHalf<tokio::net::TcpStream>, WriteHalf<tokio::net::TcpStream>)> {
+    let target = if is_c2s { config.c2s_target } else { config.s2s_target };
+    client_addr.set_to_addr(target);
+    client_addr.set_c2s_stream_open(is_c2s, &stream_open);
+
+    let out_stream = tokio::net::TcpStream::connect(target).await?;
+    let (out_rd, mut out_wr) = tokio::io::split(out_stream);
+
+    if config.proxy {
+        /*
+        https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt
+        PROXY TCP4 255.255.255.255 255.255.255.255 65535 65535\r\n
+        PROXY TCP6 ffff:f...f:ffff ffff:f...f:ffff 65535 65535\r\n
+        PROXY TCP6 SOURCE_IP DEST_IP SOURCE_PORT DEST_PORT\r\n
+         */
+        // tokio AsyncWrite doesn't have write_fmt so have to go through this buffer for some crazy reason
+        //write!(out_wr, "PROXY TCP{} {} {} {} {}\r\n", if client_addr.is_ipv4() { '4' } else {'6' }, client_addr.ip(), local_addr.ip(), client_addr.port(), local_addr.port())?;
+        write!(
+            &mut in_filter.buf[0..],
+            "PROXY TCP{} {} {} {} {}\r\n",
+            if client_addr.client_addr().is_ipv4() { '4' } else { '6' },
+            client_addr.client_addr().ip(),
+            local_addr.ip(),
+            client_addr.client_addr().port(),
+            local_addr.port()
+        )?;
+        let end_idx = &(&in_filter.buf[0..]).first_index_of(b"\n")? + 1;
+        trace!("{} '{}'", client_addr.log_from(), to_str(&in_filter.buf[0..end_idx]));
+        out_wr.write_all(&in_filter.buf[0..end_idx]).await?;
+    }
+    trace!("{} '{}'", client_addr.log_from(), to_str(&stream_open));
+    out_wr.write_all(&stream_open).await?;
+    out_wr.flush().await?;
+    Ok((out_rd, out_wr))
 }
 
 async fn stream_preamble<R: AsyncRead + Unpin>(mut in_rd: StanzaReader<R>, client_addr: &Context<'_>, mut in_filter: StanzaFilter) -> Result<(Vec<u8>, bool, StanzaReader<R>, StanzaFilter)> {
@@ -251,6 +269,13 @@ async fn main() {
         let quic_config = main_config.quic_server_config().die("invalid cert/key ?");
         for listener in listeners {
             handles.push(spawn_quic_listener(listener.parse().die("invalid listener address"), config.clone(), quic_config.clone()));
+        }
+    }
+    #[cfg(feature = "websocket")]
+    if let Some(ref listeners) = main_config.websocket_listen {
+        let acceptor = main_config.tls_acceptor().die("invalid cert/key ?");
+        for listener in listeners {
+            handles.push(spawn_websocket_listener(listener.parse().die("invalid listener address"), config.clone(), acceptor.clone()));
         }
     }
     #[cfg(feature = "outgoing")]
