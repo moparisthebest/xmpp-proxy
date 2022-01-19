@@ -1,27 +1,35 @@
 use crate::*;
+use std::convert::TryFrom;
 
 #[cfg(any(feature = "incoming", feature = "outgoing"))]
-use tokio_rustls::{rustls::ClientConfig, webpki::DNSNameRef, TlsConnector};
+use tokio_rustls::{
+    rustls::{client::ClientConfig, ServerName},
+    TlsConnector,
+};
 
 #[cfg(feature = "outgoing")]
 lazy_static::lazy_static! {
     static ref CLIENT_TLS_CONFIG: TlsConnector = {
-        let mut config = ClientConfig::new();
-        config.root_store.add_server_trust_anchors(&webpki_roots::TLS_SERVER_ROOTS);
-        config.alpn_protocols.push(ALPN_XMPP_CLIENT[0].to_vec());
+        let mut config = ClientConfig::builder()
+        .with_safe_defaults()
+        .with_root_certificates(root_cert_store())
+        .with_no_client_auth();
+        config.alpn_protocols.push(ALPN_XMPP_CLIENT.to_vec());
         TlsConnector::from(Arc::new(config))
     };
     static ref SERVER_TLS_CONFIG: TlsConnector = {
-        let mut config = ClientConfig::new();
-        config.root_store.add_server_trust_anchors(&webpki_roots::TLS_SERVER_ROOTS);
-        config.alpn_protocols.push(ALPN_XMPP_SERVER[0].to_vec());
+        let mut config = ClientConfig::builder()
+        .with_safe_defaults()
+        .with_root_certificates(root_cert_store())
+        .with_no_client_auth(); // todo: do client auth...
+        config.alpn_protocols.push(ALPN_XMPP_SERVER.to_vec());
         TlsConnector::from(Arc::new(config))
     };
 }
 
 #[cfg(feature = "outgoing")]
 pub async fn tls_connect(target: SocketAddr, server_name: &str, is_c2s: bool) -> Result<(Box<dyn AsyncWrite + Unpin + Send>, Box<dyn AsyncRead + Unpin + Send>)> {
-    let dnsname = DNSNameRef::try_from_ascii_str(server_name)?;
+    let dnsname = ServerName::try_from(server_name)?;
     let stream = tokio::net::TcpStream::connect(target).await?;
     let stream = if is_c2s {
         CLIENT_TLS_CONFIG.connect(dnsname, stream).await?
@@ -40,7 +48,7 @@ pub async fn starttls_connect(
     stream_open: &[u8],
     mut in_filter: &mut StanzaFilter,
 ) -> Result<(Box<dyn AsyncWrite + Unpin + Send>, Box<dyn AsyncRead + Unpin + Send>)> {
-    let dnsname = DNSNameRef::try_from_ascii_str(server_name)?;
+    let dnsname = ServerName::try_from(server_name)?;
     let mut stream = tokio::net::TcpStream::connect(target).await?;
     let (in_rd, mut in_wr) = stream.split();
 

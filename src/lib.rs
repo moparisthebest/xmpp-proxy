@@ -36,13 +36,13 @@ pub struct Context<'a> {
 impl<'a> Context<'a> {
     pub fn new(proto: &'static str, client_addr: SocketAddr) -> Context {
         let (log_to, log_from, conn_id) = if log_enabled!(log::Level::Info) {
-            #[cfg(feature = "env_logger")]
+            #[cfg(feature = "logging")]
             let conn_id = {
                 use rand::distributions::Alphanumeric;
                 use rand::{thread_rng, Rng};
                 thread_rng().sample_iter(&Alphanumeric).take(10).map(char::from).collect()
             };
-            #[cfg(not(feature = "env_logger"))]
+            #[cfg(not(feature = "logging"))]
             let conn_id = "".to_string();
             (
                 format!("{}: ({} <- ({}-unk)):", conn_id, client_addr, proto),
