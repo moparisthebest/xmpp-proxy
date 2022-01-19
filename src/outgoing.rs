@@ -11,7 +11,7 @@ async fn handle_outgoing_connection(stream: tokio::net::TcpStream, client_addr: 
     //let in_rd = tokio::io::BufReader::with_capacity(IN_BUFFER_SIZE, in_rd);
 
     // now read to figure out client vs server
-    let (stream_open, is_c2s, in_rd, mut in_filter) = stream_preamble(StanzaReader(in_rd), &client_addr, in_filter).await?;
+    let (stream_open, is_c2s, in_rd, mut in_filter) = stream_preamble(StanzaReader(in_rd), client_addr, in_filter).await?;
     client_addr.set_c2s_stream_open(is_c2s, &stream_open);
     // pull raw reader back out of StanzaReader
     let mut in_rd = in_rd.0;
@@ -19,7 +19,7 @@ async fn handle_outgoing_connection(stream: tokio::net::TcpStream, client_addr: 
     // we require a valid to= here or we fail
     let to = std::str::from_utf8(stream_open.extract_between(b" to='", b"'").or_else(|_| stream_open.extract_between(b" to=\"", b"\""))?)?;
 
-    let (mut out_wr, mut out_rd, stream_open) = srv_connect(&to, is_c2s, &stream_open, &mut in_filter, client_addr).await?;
+    let (mut out_wr, mut out_rd, stream_open) = srv_connect(to, is_c2s, &stream_open, &mut in_filter, client_addr).await?;
     // send server response to client
     in_wr.write_all(&stream_open).await?;
     in_wr.flush().await?;

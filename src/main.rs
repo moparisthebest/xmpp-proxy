@@ -1,3 +1,5 @@
+#![deny(clippy::all)]
+
 use std::ffi::OsString;
 use std::fs::File;
 use std::io;
@@ -158,7 +160,7 @@ async fn shuffle_rd_wr_filter<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     let in_rd = tokio::io::BufReader::with_capacity(IN_BUFFER_SIZE, in_rd);
 
     // now read to figure out client vs server
-    let (stream_open, is_c2s, mut in_rd, mut in_filter) = stream_preamble(StanzaReader(in_rd), &client_addr, in_filter).await?;
+    let (stream_open, is_c2s, mut in_rd, mut in_filter) = stream_preamble(StanzaReader(in_rd), client_addr, in_filter).await?;
 
     let (mut out_rd, mut out_wr) = open_incoming(config, local_addr, client_addr, &stream_open, is_c2s, &mut in_filter).await?;
     drop(stream_open);
@@ -204,7 +206,7 @@ async fn open_incoming(
 ) -> Result<(ReadHalf<tokio::net::TcpStream>, WriteHalf<tokio::net::TcpStream>)> {
     let target = if is_c2s { config.c2s_target } else { config.s2s_target };
     client_addr.set_to_addr(target);
-    client_addr.set_c2s_stream_open(is_c2s, &stream_open);
+    client_addr.set_c2s_stream_open(is_c2s, stream_open);
 
     let out_stream = tokio::net::TcpStream::connect(target).await?;
     let (out_rd, mut out_wr) = tokio::io::split(out_stream);
@@ -231,8 +233,8 @@ async fn open_incoming(
         trace!("{} '{}'", client_addr.log_from(), to_str(&in_filter.buf[0..end_idx]));
         out_wr.write_all(&in_filter.buf[0..end_idx]).await?;
     }
-    trace!("{} '{}'", client_addr.log_from(), to_str(&stream_open));
-    out_wr.write_all(&stream_open).await?;
+    trace!("{} '{}'", client_addr.log_from(), to_str(stream_open));
+    out_wr.write_all(stream_open).await?;
     out_wr.flush().await?;
     Ok((out_rd, out_wr))
 }
@@ -240,7 +242,7 @@ async fn open_incoming(
 async fn stream_preamble<R: AsyncRead + Unpin>(mut in_rd: StanzaReader<R>, client_addr: &Context<'_>, mut in_filter: StanzaFilter) -> Result<(Vec<u8>, bool, StanzaReader<R>, StanzaFilter)> {
     let mut stream_open = Vec::new();
     while let Ok(Some(buf)) = in_rd.next(&mut in_filter).await {
-        trace!("{} received pre-<stream:stream> stanza: '{}'", client_addr.log_from(), to_str(&buf));
+        trace!("{} received pre-<stream:stream> stanza: '{}'", client_addr.log_from(), to_str(buf));
         if buf.starts_with(b"<?xml ") {
             stream_open.extend_from_slice(buf);
         } else if buf.starts_with(b"<stream:stream ") {
@@ -252,7 +254,7 @@ async fn stream_preamble<R: AsyncRead + Unpin>(mut in_rd: StanzaReader<R>, clien
                 in_filter,
             ));
         } else {
-            bail!("bad pre-<stream:stream> stanza: {}", to_str(&buf));
+            bail!("bad pre-<stream:stream> stanza: {}", to_str(buf));
         }
     }
     bail!("stream ended before open");

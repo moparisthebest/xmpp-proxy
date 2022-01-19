@@ -46,15 +46,15 @@ pub async fn starttls_connect(
     server_name: &str,
     is_c2s: bool,
     stream_open: &[u8],
-    mut in_filter: &mut StanzaFilter,
+    in_filter: &mut StanzaFilter,
 ) -> Result<(Box<dyn AsyncWrite + Unpin + Send>, Box<dyn AsyncRead + Unpin + Send>)> {
     let dnsname = ServerName::try_from(server_name)?;
     let mut stream = tokio::net::TcpStream::connect(target).await?;
     let (in_rd, mut in_wr) = stream.split();
 
     // send the stream_open
-    trace!("starttls sending: {} '{}'", server_name, to_str(&stream_open));
-    in_wr.write_all(&stream_open).await?;
+    trace!("starttls sending: {} '{}'", server_name, to_str(stream_open));
+    in_wr.write_all(stream_open).await?;
     in_wr.flush().await?;
 
     // we naively read 1 byte at a time, which buffering significantly speeds up
@@ -63,8 +63,8 @@ pub async fn starttls_connect(
     let mut proceed_received = false;
 
     trace!("starttls reading stream open {}", server_name);
-    while let Ok(Some(buf)) = in_rd.next(&mut in_filter).await {
-        trace!("received pre-tls stanza: {} '{}'", server_name, to_str(&buf));
+    while let Ok(Some(buf)) = in_rd.next(in_filter).await {
+        trace!("received pre-tls stanza: {} '{}'", server_name, to_str(buf));
         if buf.starts_with(b"<?xml ") || buf.starts_with(b"<stream:stream ") {
             // ignore this
         } else if buf.starts_with(b"<stream:features") {
@@ -77,7 +77,7 @@ pub async fn starttls_connect(
             proceed_received = true;
             break;
         } else {
-            bail!("bad pre-tls stanza: {}", to_str(&buf));
+            bail!("bad pre-tls stanza: {}", to_str(buf));
         }
     }
     if !proceed_received {
@@ -125,13 +125,13 @@ async fn handle_tls_connection(mut stream: tokio::net::TcpStream, client_addr: &
         // craziness... can it? this could be switched to only peek 1 byte and assume
         // a leading 0x16 is TLS, it would *probably* be ok ?
         //let mut p = [0u8; 3];
-        let mut p = &mut in_filter.buf[0..3];
+        let p = &mut in_filter.buf[0..3];
         // wait up to 10 seconds until 3 bytes have been read
         use std::time::{Duration, Instant};
         let duration = Duration::from_secs(10);
         let now = Instant::now();
         loop {
-            let n = stream.peek(&mut p).await?;
+            let n = stream.peek(p).await?;
             if n == 3 {
                 break; // success
             }
@@ -163,10 +163,10 @@ async fn handle_tls_connection(mut stream: tokio::net::TcpStream, client_addr: &
         let mut in_rd = StanzaReader(in_rd);
 
         while let Ok(Some(buf)) = in_rd.next(&mut in_filter).await {
-            trace!("{} received pre-tls stanza: '{}'", client_addr.log_from(), to_str(&buf));
+            trace!("{} received pre-tls stanza: '{}'", client_addr.log_from(), to_str(buf));
             if buf.starts_with(b"<?xml ") {
-                trace!("{} '{}'", client_addr.log_to(), to_str(&buf));
-                in_wr.write_all(&buf).await?;
+                trace!("{} '{}'", client_addr.log_to(), to_str(buf));
+                in_wr.write_all(buf).await?;
                 in_wr.flush().await?;
             } else if buf.starts_with(b"<stream:stream ") {
                 // gajim seems to REQUIRE an id here...
@@ -199,7 +199,7 @@ async fn handle_tls_connection(mut stream: tokio::net::TcpStream, client_addr: &
                 proceed_sent = true;
                 break;
             } else {
-                bail!("bad pre-tls stanza: {}", to_str(&buf));
+                bail!("bad pre-tls stanza: {}", to_str(buf));
             }
         }
         if !proceed_sent {

@@ -63,7 +63,7 @@ async fn handle_websocket_connection(stream: tokio::net::TcpStream, client_addr:
     // stanzas from the servers up so we can send them across websocket frames
     let mut in_filter = StanzaFilter::new(config.max_stanza_size_bytes);
 
-    let (out_rd, mut out_wr) = open_incoming(config, local_addr, client_addr, &stream_open, is_c2s, &mut in_filter).await?;
+    let (out_rd, mut out_wr) = open_incoming(config, local_addr, client_addr, stream_open, is_c2s, &mut in_filter).await?;
 
     let mut out_rd = StanzaReader(out_rd);
 
@@ -150,7 +150,7 @@ pub fn to_ws_new(buf: &[u8], mut end_of_first_tag: usize, is_c2s: bool) -> Resul
     }
     // otherwise add proper xmlns before end of tag
     let mut ret = String::with_capacity(buf.len() + 22);
-    ret.push_str(std::str::from_utf8(&first_tag_bytes)?);
+    ret.push_str(std::str::from_utf8(first_tag_bytes)?);
     ret.push_str(if is_c2s { " xmlns='jabber:client'" } else { " xmlns='jabber:server'" });
     ret.push_str(std::str::from_utf8(&buf[end_of_first_tag..])?);
     Ok(ret)
@@ -170,12 +170,12 @@ mod tests {
         assert_eq!(from_ws(r#"<close xmlns="urn:ietf:params:xml:ns:xmpp-framing" />"#.to_string()), r#"</stream:stream>"#.to_string());
     }
 
-    async fn to_vec_eoft<'a, T: tokio::io::AsyncRead + Unpin>(mut stanza_reader: StanzaReader<T>, filter: &'a mut StanzaFilter) -> Result<Vec<String>> {
+    async fn to_vec_eoft<T: tokio::io::AsyncRead + Unpin>(mut stanza_reader: StanzaReader<T>, filter: &mut StanzaFilter) -> Result<Vec<String>> {
         let mut ret = Vec::new();
         while let Some((buf, end_of_first_tag)) = stanza_reader.next_eoft(filter).await? {
             ret.push(to_ws_new(buf, end_of_first_tag, true)?);
         }
-        return Ok(ret);
+        Ok(ret)
     }
 
     #[tokio::test]

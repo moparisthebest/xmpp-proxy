@@ -34,7 +34,8 @@ pub enum XmppConnectionType {
 pub struct XmppConnection {
     conn_type: XmppConnectionType,
     priority: u16,
-    weight: u16,
+    #[allow(dead_code)]
+    weight: u16, // todo: use weight
     port: u16,
     target: String,
 }
@@ -45,7 +46,7 @@ impl XmppConnection {
         domain: &str,
         is_c2s: bool,
         stream_open: &[u8],
-        mut in_filter: &mut crate::StanzaFilter,
+        in_filter: &mut crate::StanzaFilter,
         client_addr: &mut Context<'_>,
     ) -> Result<(Box<dyn AsyncWrite + Unpin + Send>, Box<dyn AsyncRead + Unpin + Send>, SocketAddr, &'static str)> {
         debug!("{} attempting connection to SRV: {:?}", client_addr.log_from(), self);
@@ -55,7 +56,7 @@ impl XmppConnection {
             let to_addr = SocketAddr::new(ip, self.port);
             debug!("{} trying ip {}", client_addr.log_from(), to_addr);
             match self.conn_type {
-                XmppConnectionType::StartTLS => match crate::starttls_connect(to_addr, domain, is_c2s, &stream_open, &mut in_filter).await {
+                XmppConnectionType::StartTLS => match crate::starttls_connect(to_addr, domain, is_c2s, stream_open, in_filter).await {
                     Ok((wr, rd)) => return Ok((wr, rd, to_addr, "starttls-out")),
                     Err(e) => error!("starttls connection failed to IP {} from SRV {}, error: {}", to_addr, self.target, e),
                 },
@@ -160,11 +161,11 @@ pub async fn srv_connect(
     domain: &str,
     is_c2s: bool,
     stream_open: &[u8],
-    mut in_filter: &mut crate::StanzaFilter,
+    in_filter: &mut crate::StanzaFilter,
     client_addr: &mut Context<'_>,
 ) -> Result<(Box<dyn AsyncWrite + Unpin + Send>, StanzaReader<tokio::io::BufReader<Box<dyn AsyncRead + Unpin + Send>>>, Vec<u8>)> {
-    for srv in get_xmpp_connections(&domain, is_c2s).await? {
-        let connect = srv.connect(&domain, is_c2s, &stream_open, &mut in_filter, client_addr).await;
+    for srv in get_xmpp_connections(domain, is_c2s).await? {
+        let connect = srv.connect(domain, is_c2s, stream_open, in_filter, client_addr).await;
         if connect.is_err() {
             continue;
         }
@@ -177,23 +178,23 @@ pub async fn srv_connect(
         // we naively read 1 byte at a time, which buffering significantly speeds up
         let mut out_rd = StanzaReader(tokio::io::BufReader::with_capacity(crate::IN_BUFFER_SIZE, out_rd));
 
-        trace!("{} '{}'", client_addr.log_from(), to_str(&stream_open));
-        out_wr.write_all(&stream_open).await?;
+        trace!("{} '{}'", client_addr.log_from(), to_str(stream_open));
+        out_wr.write_all(stream_open).await?;
         out_wr.flush().await?;
 
         let mut server_response = Vec::new();
         // let's read to first <stream:stream to make sure we are successfully connected to a real XMPP server
         let mut stream_received = false;
-        while let Ok(Some(buf)) = out_rd.next(&mut in_filter).await {
-            trace!("{} received pre-tls stanza: '{}'", client_addr.log_to(), to_str(&buf));
+        while let Ok(Some(buf)) = out_rd.next(in_filter).await {
+            trace!("{} received pre-tls stanza: '{}'", client_addr.log_to(), to_str(buf));
             if buf.starts_with(b"<?xml ") {
-                server_response.extend_from_slice(&buf);
+                server_response.extend_from_slice(buf);
             } else if buf.starts_with(b"<stream:stream ") {
-                server_response.extend_from_slice(&buf);
+                server_response.extend_from_slice(buf);
                 stream_received = true;
                 break;
             } else {
-                trace!("{} bad pre-tls stanza: {}", client_addr.log_to(), to_str(&buf));
+                trace!("{} bad pre-tls stanza: {}", client_addr.log_to(), to_str(buf));
                 break;
             }
         }
