@@ -1,6 +1,7 @@
 use crate::*;
 use futures::StreamExt;
-use quinn::{ClientConfigBuilder, Endpoint, ServerConfig, ServerConfigBuilder, TransportConfig};
+use quinn::{ServerConfig, TransportConfig};
+use rustls::client::ClientConfig;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -8,14 +9,14 @@ use anyhow::Result;
 
 pub async fn quic_connect(target: SocketAddr, server_name: &str, is_c2s: bool) -> Result<(Box<dyn AsyncWrite + Unpin + Send>, Box<dyn AsyncRead + Unpin + Send>)> {
     let bind_addr = "0.0.0.0:0".parse().unwrap();
-    let mut client_cfg = ClientConfigBuilder::default();
-    client_cfg.protocols(if is_c2s { ALPN_XMPP_CLIENT } else { ALPN_XMPP_SERVER });
-    let client_cfg = client_cfg.build();
-    let mut endpoint_builder = Endpoint::builder();
-    endpoint_builder.default_client_config(client_cfg);
-    let (endpoint, _incoming) = endpoint_builder.bind(&bind_addr)?;
+    let mut client_cfg = ClientConfig::builder().with_safe_defaults().with_root_certificates(root_cert_store()).with_no_client_auth(); // todo: for s2s do client auth
+    client_cfg.alpn_protocols.push(if is_c2s { ALPN_XMPP_CLIENT } else { ALPN_XMPP_SERVER }.to_vec());
+
+    let mut endpoint = quinn::Endpoint::client(bind_addr)?;
+    endpoint.set_default_client_config(quinn::ClientConfig::new(Arc::new(client_cfg)));
+
     // connect to server
-    let quinn::NewConnection { connection, .. } = endpoint.connect(&target, server_name)?.await?;
+    let quinn::NewConnection { connection, .. } = endpoint.connect(target, server_name)?.await?;
     trace!("quic connected: addr={}", connection.remote_address());
 
     let (wrt, rd) = connection.open_bi().await?;
@@ -24,20 +25,16 @@ pub async fn quic_connect(target: SocketAddr, server_name: &str, is_c2s: bool) -
 
 impl Config {
     pub fn quic_server_config(&self) -> Result<ServerConfig> {
-        let pem = std::fs::read(&self.tls_key).expect("error reading key");
-        let tls_key = quinn::PrivateKey::from_pem(&pem).expect("error parsing key");
-
-        let pem = std::fs::read(&self.tls_cert).expect("error reading certificates");
-        let cert_chain = quinn::CertificateChain::from_pem(&pem).expect("error parsing certificates");
-
         let transport_config = TransportConfig::default();
         // todo: configure transport_config here if needed
-        let mut server_config = ServerConfig::default();
+        let mut server_config = self.server_config()?;
+        // todo: will connecting without alpn work then?
+        server_config.alpn_protocols.push(ALPN_XMPP_CLIENT.to_vec());
+        server_config.alpn_protocols.push(ALPN_XMPP_SERVER.to_vec());
+        let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(server_config));
         server_config.transport = Arc::new(transport_config);
-        let mut cfg_builder = ServerConfigBuilder::new(server_config);
-        cfg_builder.certificate(cert_chain, tls_key)?;
 
-        Ok(cfg_builder.build())
+        Ok(server_config)
     }
 }
 
@@ -68,10 +65,7 @@ impl AsyncRead for NoopIo {
 }
 
 pub fn spawn_quic_listener(local_addr: SocketAddr, config: CloneableConfig, server_config: ServerConfig) -> JoinHandle<Result<()>> {
-    //let (mut incoming, server_cert) = make_server_endpoint(local_addr).die("cannot listen on port/interface");
-    let mut endpoint_builder = Endpoint::builder();
-    endpoint_builder.listen(server_config);
-    let (_endpoint, mut incoming) = endpoint_builder.bind(&local_addr).die("cannot listen on port/interface");
+    let (_endpoint, mut incoming) = quinn::Endpoint::server(server_config, local_addr).die("cannot listen on port/interface");
     tokio::spawn(async move {
         // when could this return None, do we quit?
         while let Some(incoming_conn) = incoming.next().await {

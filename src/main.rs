@@ -15,12 +15,12 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, Wr
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
-#[cfg(feature = "incoming")]
-use tokio_rustls::{
-    rustls::internal::pemfile::{certs, pkcs8_private_keys},
-    rustls::{NoClientAuth, ServerConfig},
-    TlsAcceptor,
-};
+#[cfg(feature = "rustls")]
+use rustls::{Certificate, PrivateKey, ServerConfig};
+#[cfg(feature = "rustls-pemfile")]
+use rustls_pemfile::{certs, pkcs8_private_keys};
+#[cfg(feature = "tokio-rustls")]
+use tokio_rustls::TlsAcceptor;
 
 use anyhow::{bail, Result};
 
@@ -55,8 +55,23 @@ use crate::websocket::*;
 const IN_BUFFER_SIZE: usize = 8192;
 const OUT_BUFFER_SIZE: usize = 8192;
 
-const ALPN_XMPP_CLIENT: &[&[u8]] = &[b"xmpp-client"];
-const ALPN_XMPP_SERVER: &[&[u8]] = &[b"xmpp-server"];
+// todo: split these out to outgoing module
+
+const ALPN_XMPP_CLIENT: &[u8] = b"xmpp-client";
+const ALPN_XMPP_SERVER: &[u8] = b"xmpp-server";
+
+#[cfg(feature = "webpki-roots")]
+pub fn root_cert_store() -> rustls::RootCertStore {
+    use rustls::{OwnedTrustAnchor, RootCertStore};
+    let mut root_cert_store = RootCertStore::empty();
+    root_cert_store.add_server_trust_anchors(
+        webpki_roots::TLS_SERVER_ROOTS
+            .0
+            .iter()
+            .map(|ta| OwnedTrustAnchor::from_subject_spki_name_constraints(ta.subject, ta.spki, ta.name_constraints)),
+    );
+    root_cert_store
+}
 
 #[derive(Deserialize)]
 struct Config {
@@ -70,9 +85,9 @@ struct Config {
     s2s_target: SocketAddr,
     c2s_target: SocketAddr,
     proxy: bool,
-    #[cfg(feature = "env_logger")]
+    #[cfg(feature = "logging")]
     log_level: Option<String>,
-    #[cfg(feature = "env_logger")]
+    #[cfg(feature = "logging")]
     log_style: Option<String>,
 }
 
@@ -101,19 +116,28 @@ impl Config {
         }
     }
 
-    #[cfg(feature = "incoming")]
-    fn tls_acceptor(&self) -> Result<TlsAcceptor> {
-        let mut tls_key = pkcs8_private_keys(&mut BufReader::new(File::open(&self.tls_key)?)).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))?;
+    #[cfg(all(feature = "rustls-pemfile", feature = "rustls"))]
+    fn server_config(&self) -> Result<ServerConfig> {
+        let mut tls_key: Vec<PrivateKey> = pkcs8_private_keys(&mut BufReader::new(File::open(&self.tls_key)?))
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))
+            .map(|mut keys| keys.drain(..).map(PrivateKey).collect())?;
         if tls_key.is_empty() {
             bail!("invalid key");
         }
         let tls_key = tls_key.remove(0);
 
-        let tls_cert = certs(&mut BufReader::new(File::open(&self.tls_cert)?)).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid cert"))?;
+        let tls_certs = certs(&mut BufReader::new(File::open(&self.tls_cert)?))
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid cert"))
+            .map(|mut certs| certs.drain(..).map(Certificate).collect())?;
 
-        let mut config = ServerConfig::new(NoClientAuth::new());
-        config.set_single_cert(tls_cert, tls_key)?;
-        Ok(TlsAcceptor::from(Arc::new(config)))
+        let config = ServerConfig::builder().with_safe_defaults().with_no_client_auth().with_single_cert(tls_certs, tls_key)?;
+
+        Ok(config)
+    }
+
+    #[cfg(all(feature = "tokio-rustls", feature = "rustls-pemfile", feature = "rustls"))]
+    fn tls_acceptor(&self) -> Result<TlsAcceptor> {
+        Ok(TlsAcceptor::from(Arc::new(self.server_config()?)))
     }
 }
 
@@ -239,7 +263,7 @@ async fn stream_preamble<R: AsyncRead + Unpin>(mut in_rd: StanzaReader<R>, clien
 async fn main() {
     let main_config = Config::parse(std::env::args_os().nth(1).unwrap_or_else(|| OsString::from("/etc/xmpp-proxy/xmpp-proxy.toml"))).die("invalid config file");
 
-    #[cfg(feature = "env_logger")]
+    #[cfg(feature = "logging")]
     {
         use env_logger::{Builder, Env, Target};
         let env = Env::default().filter_or("XMPP_PROXY_LOG_LEVEL", "info").write_style_or("XMPP_PROXY_LOG_STYLE", "never");

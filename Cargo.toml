@@ -34,19 +34,23 @@ rand = { version = "0.8", optional = true, features = [] }
 env_logger = { version = "0.9", optional = true, features = [] }
 
 # incoming deps
-tokio-rustls = { version = "0.22", optional = true }
+tokio-rustls = { version = "0.23", optional = true }
 
 # outgoing deps
 lazy_static = { version = "1.4", optional = true }
-webpki-roots = { version = "0.21", optional = true }
+webpki-roots = { version = "0.22", optional = true }
 trust-dns-resolver = { version = "0.20", optional = true }
 #trust-dns-resolver = { version = "0.20", features = ["dns-over-rustls"], optional = true }
 
 # quic deps
-quinn = { version = "0.7", optional = true }
+quinn = { version = "0.8", optional = true }
+
+# shared deps needed by quic and incoming
+rustls = { version = "0.20.2", optional = true }
+rustls-pemfile = { version = "0.2.1", optional = true }
 
 # websocket deps
-tokio-tungstenite = { version = "0.14", optional = true }
+tokio-tungstenite = { version = "0.16", optional = true }
 
 [features]
 default = ["incoming", "outgoing", "quic", "websocket", "logging"]
@@ -56,8 +60,11 @@ default = ["incoming", "outgoing", "quic", "websocket", "logging"]
 #default = ["quic"]
 #default = ["outgoing"]
 #default = ["incoming"]
-incoming = ["tokio-rustls"]
-outgoing = ["tokio-rustls", "trust-dns-resolver", "webpki-roots", "lazy_static"]
-quic = ["quinn"]
-websocket = ["tokio-tungstenite"]
+incoming = ["tokio-rustls", "rustls-pemfile", "rustls"]
+outgoing = ["tokio-rustls", "trust-dns-resolver", "webpki-roots", "lazy_static", "rustls"]
+quic = ["quinn", "rustls-pemfile", "rustls", "webpki-roots"]
+websocket = ["tokio-tungstenite", "tokio-rustls", "rustls-pemfile", "rustls"]
 logging = ["rand", "env_logger"]
+
+[package.metadata.cargo-all-features]
+skip_optional_dependencies = true
