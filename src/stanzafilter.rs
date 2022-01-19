@@ -238,12 +238,12 @@ mod tests {
     use std::io::Cursor;
 
     impl<T: tokio::io::AsyncRead + Unpin> StanzaReader<T> {
-        async fn to_vec<'a>(&'a mut self, filter: &'a mut StanzaFilter) -> Result<Vec<String>> {
+        async fn into_vec(mut self, filter: &mut StanzaFilter) -> Result<Vec<String>> {
             let mut ret = Vec::new();
             while let Some(stanza) = self.next(filter).await? {
                 ret.push(to_str(stanza).to_string());
             }
-            return Ok(ret);
+            Ok(ret)
         }
     }
 
@@ -266,7 +266,7 @@ mod tests {
             <d></d><e><![CDATA[what]>]]]]></e></stream:stream>
             "###,
             ))
-            .to_vec(&mut filter)
+            .into_vec(&mut filter)
             .await?,
             vec![
             "<?xml version='1.0'?>",
