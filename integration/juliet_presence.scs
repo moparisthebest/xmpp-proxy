@@ -1,0 +1,20 @@
+# Juliet login and initial presence
+
+[Client] Juliet
+	jid: juliet@two.example.org
+	password: pass
+	connect_host: scansion.two.example.org
+	connect_port: 5222
+
+---------
+
+Juliet connects
+
+Juliet sends:
+	<presence/>
+
+Juliet receives:
+	<presence/>
+
+Juliet disconnects
+

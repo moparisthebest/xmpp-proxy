@@ -1,0 +1,34 @@
+# Romeo messages Juliet
+
+[Client] Romeo
+	jid: romeo@one.example.org
+	password: pass
+	connect_host: scansion.one.example.org
+	connect_port: 5222
+
+[Client] Juliet
+	jid: juliet@two.example.org
+	password: pass
+	connect_host: scansion.two.example.org
+	connect_port: 5222
+
+
+---------
+
+Romeo connects
+
+Juliet connects
+
+Romeo sends:
+	<message to="${Juliet's full JID}" type="chat">
+		<body>Hello Juliet!</body>
+	</message>
+
+Juliet receives:
+	<message to="${Juliet's full JID}" from="${Romeo's full JID}" type="chat">
+		<body>Hello Juliet!</body>
+	</message>
+
+Romeo disconnects
+
+Juliet disconnects
