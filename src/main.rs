@@ -13,7 +13,7 @@ use die::Die;
 
 use serde_derive::Deserialize;
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
+use tokio::io::{AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
@@ -54,8 +54,10 @@ mod websocket;
 #[cfg(feature = "websocket")]
 use crate::websocket::*;
 
+mod in_out;
+pub use crate::in_out::*;
+
 const IN_BUFFER_SIZE: usize = 8192;
-const OUT_BUFFER_SIZE: usize = 8192;
 
 // todo: split these out to outgoing module
 
@@ -72,6 +74,16 @@ pub fn root_cert_store() -> rustls::RootCertStore {
             .iter()
             .map(|ta| OwnedTrustAnchor::from_subject_spki_name_constraints(ta.subject, ta.spki, ta.name_constraints)),
     );
+    root_cert_store
+}
+
+#[cfg(feature = "rustls-native-certs")]
+pub fn root_cert_store() -> rustls::RootCertStore {
+    use rustls::RootCertStore;
+    let mut root_cert_store = RootCertStore::empty();
+    for cert in rustls_native_certs::load_native_certs().expect("could not load platform certs") {
+        root_cert_store.add(&rustls::Certificate(cert.0)).unwrap();
+    }
     root_cert_store
 }
 
@@ -143,52 +155,73 @@ impl Config {
     }
 }
 
-async fn shuffle_rd_wr<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(in_rd: R, in_wr: W, config: CloneableConfig, local_addr: SocketAddr, client_addr: &mut Context<'_>) -> Result<()> {
+async fn shuffle_rd_wr(in_rd: StanzaRead, in_wr: StanzaWrite, config: CloneableConfig, local_addr: SocketAddr, client_addr: &mut Context<'_>) -> Result<()> {
     let filter = StanzaFilter::new(config.max_stanza_size_bytes);
     shuffle_rd_wr_filter(in_rd, in_wr, config, local_addr, client_addr, filter).await
 }
 
-async fn shuffle_rd_wr_filter<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
-    in_rd: R,
-    mut in_wr: W,
+async fn shuffle_rd_wr_filter(
+    mut in_rd: StanzaRead,
+    mut in_wr: StanzaWrite,
     config: CloneableConfig,
     local_addr: SocketAddr,
     client_addr: &mut Context<'_>,
-    in_filter: StanzaFilter,
+    mut in_filter: StanzaFilter,
 ) -> Result<()> {
-    // we naively read 1 byte at a time, which buffering significantly speeds up
-    let in_rd = tokio::io::BufReader::with_capacity(IN_BUFFER_SIZE, in_rd);
-
     // now read to figure out client vs server
-    let (stream_open, is_c2s, mut in_rd, mut in_filter) = stream_preamble(StanzaReader(in_rd), client_addr, in_filter).await?;
+    let (stream_open, is_c2s) = stream_preamble(&mut in_rd, &mut in_wr, client_addr.log_from(), &mut in_filter).await?;
 
-    let (mut out_rd, mut out_wr) = open_incoming(config, local_addr, client_addr, &stream_open, is_c2s, &mut in_filter).await?;
+    let (out_rd, out_wr) = open_incoming(&config, local_addr, client_addr, &stream_open, is_c2s, &mut in_filter).await?;
     drop(stream_open);
 
-    let mut out_buf = [0u8; OUT_BUFFER_SIZE];
+    shuffle_rd_wr_filter_only(
+        in_rd,
+        in_wr,
+        StanzaRead::new(Box::new(out_rd)),
+        StanzaWrite::new(Box::new(out_wr)),
+        is_c2s,
+        config.max_stanza_size_bytes,
+        client_addr,
+        in_filter,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn shuffle_rd_wr_filter_only(
+    mut in_rd: StanzaRead,
+    mut in_wr: StanzaWrite,
+    mut out_rd: StanzaRead,
+    mut out_wr: StanzaWrite,
+    is_c2s: bool,
+    max_stanza_size_bytes: usize,
+    client_addr: &mut Context<'_>,
+    mut in_filter: StanzaFilter,
+) -> Result<()> {
+    let mut out_filter = StanzaFilter::new(max_stanza_size_bytes);
 
     loop {
         tokio::select! {
-        Ok(buf) = in_rd.next(&mut in_filter) => {
-            match buf {
-                None => break,
-                Some(buf) => {
-                    trace!("{} '{}'", client_addr.log_from(), to_str(buf));
-                    out_wr.write_all(buf).await?;
-                    out_wr.flush().await?;
+            Ok(ret) = in_rd.next(&mut in_filter, client_addr.log_to(), &mut in_wr) => {
+                match ret {
+                    None => break,
+                    Some((buf, eoft)) => {
+                        trace!("{} '{}'", client_addr.log_from(), to_str(buf));
+                        out_wr.write_all(is_c2s, buf, eoft, client_addr.log_from()).await?;
+                        out_wr.flush().await?;
+                    }
                 }
-            }
-        },
-        // we could filter outgoing from-server stanzas by size here too by doing same as above
-        // but instead, we'll just send whatever the server sends as it sends it...
-        Ok(n) = out_rd.read(&mut out_buf) => {
-            if n == 0 {
-                break;
-            }
-            trace!("{} '{}'", client_addr.log_to(), to_str(&out_buf[0..n]));
-            in_wr.write_all(&out_buf[0..n]).await?;
-            in_wr.flush().await?;
-        },
+            },
+            Ok(ret) = out_rd.next(&mut out_filter, client_addr.log_from(), &mut out_wr) => {
+                match ret {
+                    None => break,
+                    Some((buf, eoft)) => {
+                        trace!("{} '{}'", client_addr.log_to(), to_str(buf));
+                        in_wr.write_all(is_c2s, buf, eoft, client_addr.log_to()).await?;
+                        in_wr.flush().await?;
+                    }
+                }
+            },
         }
     }
 
@@ -197,7 +230,7 @@ async fn shuffle_rd_wr_filter<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 }
 
 async fn open_incoming(
-    config: CloneableConfig,
+    config: &CloneableConfig,
     local_addr: SocketAddr,
     client_addr: &mut Context<'_>,
     stream_open: &[u8],
@@ -239,25 +272,20 @@ async fn open_incoming(
     Ok((out_rd, out_wr))
 }
 
-async fn stream_preamble<R: AsyncRead + Unpin>(mut in_rd: StanzaReader<R>, client_addr: &Context<'_>, mut in_filter: StanzaFilter) -> Result<(Vec<u8>, bool, StanzaReader<R>, StanzaFilter)> {
+pub async fn stream_preamble(in_rd: &mut StanzaRead, in_wr: &mut StanzaWrite, client_addr: &'_ str, in_filter: &mut StanzaFilter) -> Result<(Vec<u8>, bool)> {
     let mut stream_open = Vec::new();
-    while let Ok(Some(buf)) = in_rd.next(&mut in_filter).await {
-        trace!("{} received pre-<stream:stream> stanza: '{}'", client_addr.log_from(), to_str(buf));
+    while let Ok(Some((buf, _))) = in_rd.next(in_filter, client_addr, in_wr).await {
+        trace!("{} received pre-<stream:stream> stanza: '{}'", client_addr, to_str(buf));
         if buf.starts_with(b"<?xml ") {
             stream_open.extend_from_slice(buf);
         } else if buf.starts_with(b"<stream:stream ") {
             stream_open.extend_from_slice(buf);
-            return Ok((
-                stream_open,
-                buf.contains_seq(br#" xmlns="jabber:client""#) || buf.contains_seq(br#" xmlns='jabber:client'"#),
-                in_rd,
-                in_filter,
-            ));
+            return Ok((stream_open, buf.contains_seq(br#" xmlns="jabber:client""#) || buf.contains_seq(br#" xmlns='jabber:client'"#)));
         } else {
             bail!("bad pre-<stream:stream> stanza: {}", to_str(buf));
         }
     }
-    bail!("stream ended before open");
+    bail!("stream ended before open")
 }
 
 #[tokio::main]
@@ -277,6 +305,7 @@ async fn main() {
         if let Some(ref log_style) = main_config.log_style {
             builder.parse_write_style(log_style);
         }
+        // todo: config for this: builder.format_timestamp(None);
         builder.init();
     }
 

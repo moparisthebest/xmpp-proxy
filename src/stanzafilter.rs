@@ -214,7 +214,6 @@ impl<T: tokio::io::AsyncRead + Unpin> StanzaReader<T> {
         }
     }
 
-    #[cfg(feature = "websocket")]
     pub async fn next_eoft<'a>(&'a mut self, filter: &'a mut StanzaFilter) -> Result<Option<(&'a [u8], usize)>> {
         use tokio::io::AsyncReadExt;
 

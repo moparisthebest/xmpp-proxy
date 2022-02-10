@@ -34,8 +34,7 @@ xmpp-proxy in outgoing mode will:
 #### Configuration
   * `mkdir /etc/xmpp-proxy/ && cp xmpp-proxy.toml /etc/xmpp-proxy/`
   * edit `/etc/xmpp-proxy/xmpp-proxy.toml` as needed, file is annotated clearly with comments
-  * put your TLS key/cert in `/etc/xmpp-proxy/`, if your key has "RSA PRIVATE KEY" in it, change that to "PRIVATE KEY":
-    `sed -i 's/RSA PRIVATE KEY/PRIVATE KEY/' /etc/xmpp-proxy/le.key`
+  * put your TLS key/cert in `/etc/xmpp-proxy/`
   * Example systemd unit is provided in xmpp-proxy.service and locks it down with bare minimum permissions.  Need to
     set the permissions correctly: `chown -Rv 'systemd-network:' /etc/xmpp-proxy/`
   * start xmpp-proxy: `Usage: xmpp-proxy [/path/to/xmpp-proxy.toml (default /etc/xmpp-proxy/xmpp-proxy.toml]`
@@ -53,7 +52,6 @@ use the provided `xmpp-proxy.toml` configuration as-is.
 Edit `/etc/prosody/prosody.cfg.lua`, Add these to modules_enabled:
 ```
 "net_proxy";
-"secure_interfaces";
 "s2s_outgoing_proxy";
 ```
 Until prosody-modules is updated, use my new module [mod_s2s_outgoing_proxy.lua](https://www.moparisthebest.com/mod_s2s_outgoing_proxy.lua).
@@ -68,12 +66,11 @@ interfaces = { "127.0.0.1" }
 -- you can also remove all certificates from your config
 s2s_require_encryption = false
 s2s_secure_auth = false
+c2s_require_encryption = false
+allow_unencrypted_plain_auth = true
 
 -- xmpp-proxy outgoing is listening on this port, make all outgoing s2s connections directly to here
 s2s_outgoing_proxy = { "127.0.0.1", 15270 }
-
--- trust connections coming from these IPs
-secure_interfaces = { "127.0.0.1", "::1" }
 
 -- handle PROXY protocol on these ports
 proxy_port_mappings = {

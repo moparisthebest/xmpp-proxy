@@ -28,7 +28,7 @@ lazy_static::lazy_static! {
 }
 
 #[cfg(feature = "outgoing")]
-pub async fn tls_connect(target: SocketAddr, server_name: &str, is_c2s: bool) -> Result<(Box<dyn AsyncWrite + Unpin + Send>, Box<dyn AsyncRead + Unpin + Send>)> {
+pub async fn tls_connect(target: SocketAddr, server_name: &str, is_c2s: bool) -> Result<(StanzaWrite, StanzaRead)> {
     let dnsname = ServerName::try_from(server_name)?;
     let stream = tokio::net::TcpStream::connect(target).await?;
     let stream = if is_c2s {
@@ -37,17 +37,11 @@ pub async fn tls_connect(target: SocketAddr, server_name: &str, is_c2s: bool) ->
         SERVER_TLS_CONFIG.connect(dnsname, stream).await?
     };
     let (rd, wrt) = tokio::io::split(stream);
-    Ok((Box::new(wrt), Box::new(rd)))
+    Ok((StanzaWrite::AsyncWrite(Box::new(wrt)), StanzaRead::new(Box::new(rd))))
 }
 
 #[cfg(feature = "outgoing")]
-pub async fn starttls_connect(
-    target: SocketAddr,
-    server_name: &str,
-    is_c2s: bool,
-    stream_open: &[u8],
-    in_filter: &mut StanzaFilter,
-) -> Result<(Box<dyn AsyncWrite + Unpin + Send>, Box<dyn AsyncRead + Unpin + Send>)> {
+pub async fn starttls_connect(target: SocketAddr, server_name: &str, is_c2s: bool, stream_open: &[u8], in_filter: &mut StanzaFilter) -> Result<(StanzaWrite, StanzaRead)> {
     let dnsname = ServerName::try_from(server_name)?;
     let mut stream = tokio::net::TcpStream::connect(target).await?;
     let (in_rd, mut in_wr) = stream.split();
@@ -91,7 +85,7 @@ pub async fn starttls_connect(
         SERVER_TLS_CONFIG.connect(dnsname, stream).await?
     };
     let (rd, wrt) = tokio::io::split(stream);
-    Ok((Box::new(wrt), Box::new(rd)))
+    Ok((StanzaWrite::AsyncWrite(Box::new(wrt)), StanzaRead::new(Box::new(rd))))
 }
 
 #[cfg(feature = "incoming")]
@@ -213,5 +207,5 @@ async fn handle_tls_connection(mut stream: tokio::net::TcpStream, client_addr: &
 
     let (in_rd, in_wr) = tokio::io::split(stream);
 
-    shuffle_rd_wr_filter(in_rd, in_wr, config, local_addr, client_addr, in_filter).await
+    shuffle_rd_wr_filter(StanzaRead::new(Box::new(in_rd)), StanzaWrite::new(Box::new(in_wr)), config, local_addr, client_addr, in_filter).await
 }

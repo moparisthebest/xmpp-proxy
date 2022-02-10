@@ -1,7 +1,7 @@
 use crate::*;
-use futures::{SinkExt, StreamExt, TryStreamExt};
+use anyhow::Result;
+use futures::StreamExt;
 
-use tokio_tungstenite::tungstenite::protocol::Message::*;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
 // https://datatracker.ietf.org/doc/html/rfc7395
@@ -31,7 +31,10 @@ async fn handle_websocket_connection(stream: tokio::net::TcpStream, client_addr:
     // start TLS
     let stream = acceptor.accept(stream).await?;
 
+    let stream: tokio_rustls::TlsStream<tokio::net::TcpStream> = stream.into();
+
     // accept the websocket
+    // todo: check SEC_WEBSOCKET_PROTOCOL or ORIGIN ?
     let stream = tokio_tungstenite::accept_async_with_config(
         stream,
         Some(WebSocketConfig {
@@ -43,86 +46,31 @@ async fn handle_websocket_connection(stream: tokio::net::TcpStream, client_addr:
     )
     .await?;
 
-    let (mut in_wr, mut in_rd) = stream.split();
+    let (in_wr, in_rd) = stream.split();
 
-    // https://docs.rs/tungstenite/0.14.0/tungstenite/protocol/enum.Message.html
-    // https://datatracker.ietf.org/doc/html/rfc7395#section-3.2 Data frame messages in the XMPP subprotocol MUST be of the text type and contain UTF-8 encoded data.
-    let (stanza, is_c2s) = match in_rd.try_next().await? {
-        // todo: c2s is xmlns="urn:ietf:params:xml:ns:xmpp-framing", let's make up s2s ? xmlns="urn:ietf:params:xml:ns:xmpp-framing-server" sounds good to me
-        Some(Text(stanza)) => {
-            let is_c2s = stanza.contains(r#" xmlns="urn:ietf:params:xml:ns:xmpp-framing""#) || stanza.contains(r#" xmlns='urn:ietf:params:xml:ns:xmpp-framing'"#);
-            (stanza, is_c2s)
-        }
-        _ => bail!("expected first websocket frame to be open"),
-    };
+    let in_filter = StanzaFilter::new(config.max_stanza_size_bytes);
 
-    let stanza = from_ws(stanza);
-    let stream_open = stanza.as_bytes();
-
-    // websocket frame size filters incoming stanza size from client, this is used to split the
-    // stanzas from the servers up so we can send them across websocket frames
-    let mut in_filter = StanzaFilter::new(config.max_stanza_size_bytes);
-
-    let (out_rd, mut out_wr) = open_incoming(config, local_addr, client_addr, stream_open, is_c2s, &mut in_filter).await?;
-
-    let mut out_rd = StanzaReader(out_rd);
-
-    loop {
-        tokio::select! {
-            // server to client
-            Ok(buf) = out_rd.next_eoft(&mut in_filter) => {
-                match buf {
-                    None => break,
-                    Some((buf, end_of_first_tag)) => {
-                        // ignore this
-                        if buf.starts_with(b"<?xml ") {
-                            continue;
-                        }
-                        let stanza = to_ws_new(buf, end_of_first_tag, is_c2s)?;
-                        trace!("{} '{}'", client_addr.log_to(), stanza);
-                        in_wr.feed(Text(stanza)).await?;
-                        in_wr.flush().await?;
-                    }
-                }
-            },
-            Ok(Some(msg)) = in_rd.try_next() => {
-                match msg {
-                    // actual XMPP stanzas
-                    Text(stanza) => {
-                        let stanza = from_ws(stanza);
-                        trace!("{} '{}'", client_addr.log_from(), stanza);
-                        out_wr.write_all(stanza.as_bytes()).await?;
-                        out_wr.flush().await?;
-                    }
-                    // websocket ping/pong
-                    Ping(msg) => {
-                        in_wr.feed(Pong(msg)).await?;
-                        in_wr.flush().await?;
-                    },
-                    // handle Close, just break from loop, hopefully client sent <close/> before
-                    Close(_) => break,
-                    _ => bail!("invalid websocket message: {}", msg) // Binary or Pong
-                }
-            },
-            // todo: should we also send pings to the client ourselves on a schedule? StanzaFilter strips out whitespace pings if the server uses them...
-        }
-    }
-
-    info!("{} disconnected", client_addr.log_from());
-    Ok(())
+    shuffle_rd_wr_filter(StanzaRead::WebSocketRead(in_rd), StanzaWrite::WebSocketClientWrite(in_wr), config, local_addr, client_addr, in_filter).await
 }
 
 pub fn from_ws(stanza: String) -> String {
     if stanza.starts_with("<open ") {
-        return stanza
-            .replace("<open ", r#"<?xml version='1.0'?><stream:stream xmlns:stream="http://etherx.jabber.org/streams" "#)
+        let stanza = stanza
+            // todo: hmm what to do here, xml needed? breaks srv pre-tls detection because it's really 2 "stanzas"....
+            //.replace("<open ", r#"<?xml version='1.0'?><stream:stream "#)
+            .replace("<open ", r#"<stream:stream "#)
             .replace("urn:ietf:params:xml:ns:xmpp-framing-server", "jabber:server")
-            .replace("urn:ietf:params:xml:ns:xmpp-framing", "jabber:client")
-            .replace("/>", ">");
+            .replace("urn:ietf:params:xml:ns:xmpp-framing", "jabber:client");
+        if !stanza.contains("xmlns:stream=") {
+            stanza.replace("/>", r#" xmlns:stream="http://etherx.jabber.org/streams">"#)
+        } else {
+            stanza.replace("/>", ">")
+        }
     } else if stanza.starts_with("<close ") {
-        return "</stream:stream>".to_string();
+        "</stream:stream>".to_string()
+    } else {
+        stanza
     }
-    stanza
 }
 
 pub fn to_ws_new(buf: &[u8], mut end_of_first_tag: usize, is_c2s: bool) -> Result<String> {
@@ -156,6 +104,37 @@ pub fn to_ws_new(buf: &[u8], mut end_of_first_tag: usize, is_c2s: bool) -> Resul
     Ok(ret)
 }
 
+use rustls::ServerName;
+use std::convert::TryFrom;
+
+use tokio_rustls::TlsConnector;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::header::{ORIGIN, SEC_WEBSOCKET_PROTOCOL};
+use tokio_tungstenite::tungstenite::http::Uri;
+
+pub async fn websocket_connect(target: SocketAddr, server_name: &str, url: &Uri, origin: &str, _is_c2s: bool) -> Result<(StanzaWrite, StanzaRead)> {
+    // todo: WebSocketConfig
+    // todo: static ? alpn? client cert auth for server
+    let connector = rustls::ClientConfig::builder().with_safe_defaults().with_root_certificates(root_cert_store()).with_no_client_auth();
+
+    let mut request = url.into_client_request()?;
+    request.headers_mut().append(SEC_WEBSOCKET_PROTOCOL, "xmpp".parse()?);
+    request.headers_mut().append(ORIGIN, origin.parse()?);
+
+    let dnsname = ServerName::try_from(server_name)?;
+    let stream = tokio::net::TcpStream::connect(target).await?;
+    let connector = TlsConnector::from(Arc::new(connector));
+    let stream = connector.connect(dnsname, stream).await?;
+
+    let stream: tokio_rustls::TlsStream<tokio::net::TcpStream> = stream.into();
+
+    let (stream, _) = tokio_tungstenite::client_async_with_config(request, stream, None).await?;
+
+    let (wrt, rd) = stream.split();
+
+    Ok((StanzaWrite::WebSocketClientWrite(wrt), StanzaRead::WebSocketRead(rd)))
+}
+
 #[cfg(test)]
 mod tests {
     use crate::websocket::*;
@@ -165,9 +144,14 @@ mod tests {
     fn test_from_ws() {
         assert_eq!(
             from_ws(r#"<open xmlns="urn:ietf:params:xml:ns:xmpp-framing" version="1.0" to="test.moparisthe.best" xml:lang="en" />"#.to_string()),
-            r#"<?xml version='1.0'?><stream:stream xmlns:stream="http://etherx.jabber.org/streams" xmlns="jabber:client" version="1.0" to="test.moparisthe.best" xml:lang="en" >"#.to_string()
+            r#"<?xml version='1.0'?><stream:stream xmlns="jabber:client" version="1.0" to="test.moparisthe.best" xml:lang="en"  xmlns:stream="http://etherx.jabber.org/streams">"#.to_string()
         );
         assert_eq!(from_ws(r#"<close xmlns="urn:ietf:params:xml:ns:xmpp-framing" />"#.to_string()), r#"</stream:stream>"#.to_string());
+
+        assert_eq!(
+            from_ws(r#"<open to='one.example.org' xmlns='urn:ietf:params:xml:ns:xmpp-framing' xmlns:stream='http://etherx.jabber.org/streams' version='1.0'/>"#.to_string()),
+            r#"<?xml version='1.0'?><stream:stream to='one.example.org' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams' version='1.0'>"#.to_string()
+        );
     }
 
     async fn to_vec_eoft<T: tokio::io::AsyncRead + Unpin>(mut stanza_reader: StanzaReader<T>, filter: &mut StanzaFilter) -> Result<Vec<String>> {

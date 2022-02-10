@@ -7,7 +7,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use anyhow::Result;
 
-pub async fn quic_connect(target: SocketAddr, server_name: &str, is_c2s: bool) -> Result<(Box<dyn AsyncWrite + Unpin + Send>, Box<dyn AsyncRead + Unpin + Send>)> {
+pub async fn quic_connect(target: SocketAddr, server_name: &str, is_c2s: bool) -> Result<(StanzaWrite, StanzaRead)> {
     let bind_addr = "0.0.0.0:0".parse().unwrap();
     let mut client_cfg = ClientConfig::builder().with_safe_defaults().with_root_certificates(root_cert_store()).with_no_client_auth(); // todo: for s2s do client auth
     client_cfg.alpn_protocols.push(if is_c2s { ALPN_XMPP_CLIENT } else { ALPN_XMPP_SERVER }.to_vec());
@@ -20,7 +20,7 @@ pub async fn quic_connect(target: SocketAddr, server_name: &str, is_c2s: bool) -
     trace!("quic connected: addr={}", connection.remote_address());
 
     let (wrt, rd) = connection.open_bi().await?;
-    Ok((Box::new(wrt), Box::new(rd)))
+    Ok((StanzaWrite::AsyncWrite(Box::new(wrt)), StanzaRead::new(Box::new(rd))))
 }
 
 impl Config {
@@ -80,7 +80,7 @@ pub fn spawn_quic_listener(local_addr: SocketAddr, config: CloneableConfig, serv
                         let mut client_addr = client_addr.clone();
                         info!("{} connected new stream", client_addr.log_from());
                         tokio::spawn(async move {
-                            if let Err(e) = shuffle_rd_wr(rd, wrt, config, local_addr, &mut client_addr).await {
+                            if let Err(e) = shuffle_rd_wr(StanzaRead::new(Box::new(rd)), StanzaWrite::new(Box::new(wrt)), config, local_addr, &mut client_addr).await {
                                 error!("{} {}", client_addr.log_from(), e);
                             }
                         });
