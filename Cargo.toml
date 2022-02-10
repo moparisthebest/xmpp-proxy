@@ -38,9 +38,11 @@ tokio-rustls = { version = "0.23", optional = true }
 
 # outgoing deps
 lazy_static = { version = "1.4", optional = true }
-webpki-roots = { version = "0.22", optional = true }
 trust-dns-resolver = { version = "0.20", optional = true }
 #trust-dns-resolver = { version = "0.20", features = ["dns-over-rustls"], optional = true }
+# todo: feature to swap between webpki-roots and rustls-native-certs
+webpki-roots = { version = "0.22", optional = true }
+rustls-native-certs = { version = "0.6", optional = true }
 
 # quic deps
 quinn = { version = "0.8", optional = true }
@@ -50,20 +52,16 @@ rustls = { version = "0.20.2", optional = true }
 rustls-pemfile = { version = "0.2.1", optional = true }
 
 # websocket deps
-tokio-tungstenite = { version = "0.16", optional = true }
+#tokio-tungstenite = { version = "0.16", optional = true, features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.16", optional = true, features = ["rustls-tls-native-roots"] }
+futures-util = { version = "0.3", default-features = false, features = ["async-await", "sink", "std"], optional = true }
 
 [features]
 default = ["incoming", "outgoing", "quic", "websocket", "logging"]
-#default = ["incoming", "outgoing"]
-#default = ["incoming", "quic"]
-#default = ["outgoing", "quic"]
-#default = ["quic"]
-#default = ["outgoing"]
-#default = ["incoming"]
 incoming = ["tokio-rustls", "rustls-pemfile", "rustls"]
-outgoing = ["tokio-rustls", "trust-dns-resolver", "webpki-roots", "lazy_static", "rustls"]
-quic = ["quinn", "rustls-pemfile", "rustls", "webpki-roots"]
-websocket = ["tokio-tungstenite", "tokio-rustls", "rustls-pemfile", "rustls"]
+outgoing = ["tokio-rustls", "trust-dns-resolver", "rustls-native-certs", "lazy_static", "rustls"]
+quic = ["quinn", "rustls-pemfile", "rustls", "rustls-native-certs"]
+websocket = ["tokio-tungstenite", "futures-util", "tokio-rustls", "rustls-pemfile", "rustls", "rustls-native-certs"]
 logging = ["rand", "env_logger"]
 
 [package.metadata.cargo-all-features]

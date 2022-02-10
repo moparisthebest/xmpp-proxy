@@ -5,3 +5,5 @@
 **/out/
 **/core.*
 fuzz/target/
+todo.txt
+conflict/
