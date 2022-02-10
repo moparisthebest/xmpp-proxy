@@ -1,0 +1,23 @@
+$TTL 300
+; example.org
+@       IN      SOA     ns1.example.org. postmaster.example.org. (
+                                        2018111111 ; Serial
+                                        28800      ; Refresh
+                                        1800       ; Retry
+                                        604800     ; Expire - 1 week
+                                        86400 )    ; Negative Cache TTL
+                IN      NS      ns1
+ns1             IN      A       192.5.0.10
+server1         IN      A       192.5.0.20
+server2         IN      A       192.5.0.30
+xp1         IN      A       192.5.0.40
+xp2         IN      A       192.5.0.50
+xp3         IN      A       192.5.0.60
+
+one    IN      CNAME   xp1
+two    IN      CNAME   xp2
+_xmpps-server._tcp.one  IN      SRV     5   1       52269     xp1
+_xmpps-server._tcp.two  IN      SRV     5   1       52269     xp2
+
+scansion.one    IN      CNAME   xp3
+scansion.two    IN      CNAME   xp3

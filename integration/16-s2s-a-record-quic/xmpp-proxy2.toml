@@ -1,0 +1,44 @@
+
+# interfaces to listen for reverse proxy STARTTLS/Direct TLS XMPP connections on, should be open to the internet
+incoming_listen = [ "0.0.0.0:5222" ]
+# interfaces to listen for reverse proxy QUIC XMPP connections on, should be open to the internet
+quic_listen = [ "0.0.0.0:443" ]
+# interfaces to listen for reverse proxy TLS WebSocket (wss) XMPP connections on, should be open to the internet
+websocket_listen = [ ]
+# interfaces to listen for outgoing proxy TCP XMPP connections on, should be localhost
+outgoing_listen = [ "0.0.0.0:15270" ]
+
+# these ports shouldn't do any TLS, but should assume any connection from xmpp-proxy is secure
+# prosody module: https://modules.prosody.im/mod_secure_interfaces.html
+
+# c2s port backend XMPP server listens on
+c2s_target = "192.5.0.30:15222"
+
+# s2s port backend XMPP server listens on
+s2s_target = "192.5.0.30:15269"
+
+# send PROXYv1 header to backend XMPP server
+# https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt
+# prosody module: https://modules.prosody.im/mod_net_proxy.html
+# ejabberd config: https://docs.ejabberd.im/admin/configuration/listen-options/#use-proxy-protocol
+proxy = true
+
+# limit incoming stanzas to this many bytes, default to ejabberd's default
+# https://github.com/processone/ejabberd/blob/master/ejabberd.yml.example#L32
+# xmpp-proxy will use this many bytes + 16k per connection
+max_stanza_size_bytes = 262_144
+
+# TLS key/certificate valid for all your XMPP domains, PEM format
+# included systemd unit can only read files from /etc/xmpp-proxy/ so put them in there
+tls_key = "/etc/prosody/certs/two.example.org.key"
+tls_cert = "/etc/prosody/certs/two.example.org.crt"
+
+# configure logging, defaults are commented
+# can also set env variables XMPP_PROXY_LOG_LEVEL and/or XMPP_PROXY_LOG_STYLE, but values in this file override them
+# many options, trace is XML-console-level, refer to: https://docs.rs/env_logger/0.8.3/env_logger/#enabling-logging
+#log_level = "info"
+# for development/debugging:
+log_level = "info,xmpp_proxy=trace"
+
+# one of auto, always, never, refer to: https://docs.rs/env_logger/0.8.3/env_logger/#disabling-colors
+#log_style = "never"

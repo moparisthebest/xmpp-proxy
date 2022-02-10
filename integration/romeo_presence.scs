@@ -1,0 +1,20 @@
+# Romeo login and initial presence
+
+[Client] Romeo
+	jid: romeo@one.example.org
+	password: pass
+	connect_host: scansion.one.example.org
+	connect_port: 5222
+
+---------
+
+Romeo connects
+
+Romeo sends:
+	<presence/>
+
+Romeo receives:
+	<presence/>
+
+Romeo disconnects
+
