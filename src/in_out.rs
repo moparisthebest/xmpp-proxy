@@ -9,14 +9,14 @@ use futures_util::{
     stream::{SplitSink, SplitStream},
     SinkExt, TryStreamExt,
 };
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, BufStream};
 #[cfg(feature = "websocket")]
 use tokio_tungstenite::{tungstenite::Message::*, WebSocketStream};
 
 #[cfg(feature = "websocket")]
-type WsWr = SplitSink<WebSocketStream<tokio_rustls::TlsStream<tokio::net::TcpStream>>, tokio_tungstenite::tungstenite::Message>;
+type WsWr = SplitSink<WebSocketStream<BufStream<tokio_rustls::TlsStream<tokio::net::TcpStream>>>, tokio_tungstenite::tungstenite::Message>;
 #[cfg(feature = "websocket")]
-type WsRd = SplitStream<WebSocketStream<tokio_rustls::TlsStream<tokio::net::TcpStream>>>;
+type WsRd = SplitStream<WebSocketStream<BufStream<tokio_rustls::TlsStream<tokio::net::TcpStream>>>>;
 
 pub enum StanzaWrite {
     AsyncWrite(Box<dyn AsyncWrite + Unpin + Send>),
@@ -25,14 +25,17 @@ pub enum StanzaWrite {
 }
 
 pub enum StanzaRead {
-    AsyncRead(StanzaReader<BufReader<Box<dyn AsyncRead + Unpin + Send>>>),
+    AsyncRead(StanzaReader<Box<dyn AsyncRead + Unpin + Send>>),
     #[cfg(feature = "websocket")]
     WebSocketRead(WsRd),
 }
 
 impl StanzaWrite {
-    pub fn new(wr: Box<dyn AsyncWrite + Unpin + Send>) -> Self {
-        AsyncWrite(wr)
+    #[inline(always)]
+    pub fn new<T: 'static + AsyncWrite + Unpin + Send>(wr: T) -> Self {
+        AsyncWrite(Box::new(wr))
+        // todo: investigate buffering this, but don't double buffer
+        //AsyncWrite(Box::new(tokio::io::BufWriter::with_capacity(8192, wr)))
     }
 
     pub async fn write_all<'a>(&'a mut self, is_c2s: bool, buf: &'a [u8], end_of_first_tag: usize, client_addr: &'a str) -> Result<()> {
@@ -69,9 +72,16 @@ impl StanzaWrite {
 }
 
 impl StanzaRead {
-    pub fn new(rd: Box<dyn AsyncRead + Unpin + Send>) -> Self {
+    #[inline(always)]
+    pub fn new<T: 'static + AsyncRead + Unpin + Send>(rd: T) -> Self {
         // we naively read 1 byte at a time, which buffering significantly speeds up
-        AsyncRead(StanzaReader(BufReader::with_capacity(crate::IN_BUFFER_SIZE, rd)))
+        AsyncRead(StanzaReader(Box::new(BufReader::with_capacity(crate::IN_BUFFER_SIZE, rd))))
+    }
+
+    #[inline(always)]
+    pub fn already_buffered<T: 'static + AsyncRead + Unpin + Send>(rd: T) -> Self {
+        // we naively read 1 byte at a time, which buffering significantly speeds up
+        AsyncRead(StanzaReader(Box::new(rd)))
     }
 
     pub async fn next<'a>(&'a mut self, filter: &'a mut StanzaFilter, client_addr: &'a str, wrt: &mut StanzaWrite) -> Result<Option<(&'a [u8], usize)>> {

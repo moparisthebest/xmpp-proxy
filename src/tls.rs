@@ -1,5 +1,6 @@
 use crate::*;
 use std::convert::TryFrom;
+use tokio::io::{AsyncBufReadExt, BufStream};
 
 #[cfg(any(feature = "incoming", feature = "outgoing"))]
 use tokio_rustls::{
@@ -37,7 +38,7 @@ pub async fn tls_connect(target: SocketAddr, server_name: &str, is_c2s: bool) ->
         SERVER_TLS_CONFIG.connect(dnsname, stream).await?
     };
     let (rd, wrt) = tokio::io::split(stream);
-    Ok((StanzaWrite::AsyncWrite(Box::new(wrt)), StanzaRead::new(Box::new(rd))))
+    Ok((StanzaWrite::new(wrt), StanzaRead::new(rd)))
 }
 
 #[cfg(feature = "outgoing")]
@@ -85,7 +86,7 @@ pub async fn starttls_connect(target: SocketAddr, server_name: &str, is_c2s: boo
         SERVER_TLS_CONFIG.connect(dnsname, stream).await?
     };
     let (rd, wrt) = tokio::io::split(stream);
-    Ok((StanzaWrite::AsyncWrite(Box::new(wrt)), StanzaRead::new(Box::new(rd))))
+    Ok((StanzaWrite::new(wrt), StanzaRead::new(rd)))
 }
 
 #[cfg(feature = "incoming")]
@@ -203,9 +204,43 @@ async fn handle_tls_connection(mut stream: tokio::net::TcpStream, client_addr: &
 
     let stream = acceptor.accept(stream).await?;
 
-    // todo: try to peek stream here and handle websocket on these ports too?
+    #[cfg(not(feature = "websocket"))]
+    {
+        let (in_rd, in_wr) = tokio::io::split(stream);
+        shuffle_rd_wr_filter(StanzaRead::new(in_rd), StanzaWrite::new(in_wr), config, local_addr, client_addr, in_filter).await
+    }
 
-    let (in_rd, in_wr) = tokio::io::split(stream);
+    #[cfg(feature = "websocket")]
+    {
+        let stream: tokio_rustls::TlsStream<tokio::net::TcpStream> = stream.into();
+        let mut stream = BufStream::with_capacity(crate::IN_BUFFER_SIZE, 0, stream);
+        let websocket = {
+            // wait up to 10 seconds until 3 bytes have been read
+            use std::time::{Duration, Instant};
+            let duration = Duration::from_secs(10);
+            let now = Instant::now();
+            let mut buf = stream.fill_buf().await?;
+            loop {
+                if buf.len() >= 3 {
+                    break; // success
+                }
+                if buf.is_empty() {
+                    bail!("not enough bytes");
+                }
+                if Instant::now() - now > duration {
+                    bail!("less than 3 bytes in 10 seconds, closed connection?");
+                }
+                buf = stream.fill_buf().await?;
+            }
 
-    shuffle_rd_wr_filter(StanzaRead::new(Box::new(in_rd)), StanzaWrite::new(Box::new(in_wr)), config, local_addr, client_addr, in_filter).await
+            buf[..3] == b"GET"[..]
+        };
+
+        if websocket {
+            handle_websocket_connection(stream, client_addr, local_addr, config).await
+        } else {
+            let (in_rd, in_wr) = tokio::io::split(stream);
+            shuffle_rd_wr_filter(StanzaRead::already_buffered(in_rd), StanzaWrite::new(in_wr), config, local_addr, client_addr, in_filter).await
+        }
+    }
 }

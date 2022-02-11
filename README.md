@@ -20,7 +20,7 @@ xmpp-proxy in outgoing mode will:
   1. listen on any number of interfaces/ports
   2. accept any plain-text TCP connection from a local XMPP server or client
   3. look up the required SRV records
-  4. connect to a real XMPP server across the internet over STARTTLS, Direct TLS, or QUIC
+  4. connect to a real XMPP server across the internet over STARTTLS, Direct TLS, QUIC, or WebSocket
   5. fallback to next SRV target or defaults as required to fully connect
   6. perform all the proper required certificate validation logic
   7. limit incoming stanza sizes as configured
@@ -127,7 +127,7 @@ xmpp-proxy has 5 compile-time features:
   1. `incoming` - enables `incoming_listen` config option for reverse proxy STARTTLS/TLS
   2. `outgoing` - enables `outgoing_listen` config option for outgoing proxy STARTTLS/TLS
   3. `quic` - enables `quic_listen` config option for reverse proxy QUIC, and QUIC support for `outgoing` if it is enabled
-  4. `websocket` - enables `websocket_listen` config option for reverse proxy WebSocket
+  4. `websocket` - enables reverse proxy WebSocket on `incoming_listen`, and WebSocket support for `outgoing` if it is enabled
   5. `logging` - enables configurable logging
 
 So to build only supporting reverse proxy STARTTLS/TLS, no QUIC, run: `cargo build --release --no-default-features --features incoming`
@@ -140,5 +140,4 @@ Thanks [rxml](https://github.com/horazont/rxml) for afl-fuzz seeds
 
 #### todo
   1. sasl external for s2s, initiating and receiving
-  2. websocket outgoing
-  3. XEP for XMPP-over-QUIC and XMPP-S2S-over-WebSocket
+  2. XEP for XMPP-over-QUIC and XMPP-S2S-over-WebSocket
