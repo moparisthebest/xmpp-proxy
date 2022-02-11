@@ -20,7 +20,7 @@ pub async fn quic_connect(target: SocketAddr, server_name: &str, is_c2s: bool) -
     trace!("quic connected: addr={}", connection.remote_address());
 
     let (wrt, rd) = connection.open_bi().await?;
-    Ok((StanzaWrite::AsyncWrite(Box::new(wrt)), StanzaRead::new(Box::new(rd))))
+    Ok((StanzaWrite::new(wrt), StanzaRead::new(rd)))
 }
 
 impl Config {
@@ -80,7 +80,7 @@ pub fn spawn_quic_listener(local_addr: SocketAddr, config: CloneableConfig, serv
                         let mut client_addr = client_addr.clone();
                         info!("{} connected new stream", client_addr.log_from());
                         tokio::spawn(async move {
-                            if let Err(e) = shuffle_rd_wr(StanzaRead::new(Box::new(rd)), StanzaWrite::new(Box::new(wrt)), config, local_addr, &mut client_addr).await {
+                            if let Err(e) = shuffle_rd_wr(StanzaRead::new(rd), StanzaWrite::new(wrt), config, local_addr, &mut client_addr).await {
                                 error!("{} {}", client_addr.log_from(), e);
                             }
                         });

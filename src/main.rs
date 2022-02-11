@@ -93,7 +93,6 @@ struct Config {
     tls_cert: String,
     incoming_listen: Option<Vec<String>>,
     quic_listen: Option<Vec<String>>,
-    websocket_listen: Option<Vec<String>>,
     outgoing_listen: Option<Vec<String>>,
     max_stanza_size_bytes: usize,
     s2s_target: SocketAddr,
@@ -177,8 +176,8 @@ async fn shuffle_rd_wr_filter(
     shuffle_rd_wr_filter_only(
         in_rd,
         in_wr,
-        StanzaRead::new(Box::new(out_rd)),
-        StanzaWrite::new(Box::new(out_wr)),
+        StanzaRead::new(out_rd),
+        StanzaWrite::new(out_wr),
         is_c2s,
         config.max_stanza_size_bytes,
         client_addr,
@@ -324,13 +323,6 @@ async fn main() {
         let quic_config = main_config.quic_server_config().die("invalid cert/key ?");
         for listener in listeners {
             handles.push(spawn_quic_listener(listener.parse().die("invalid listener address"), config.clone(), quic_config.clone()));
-        }
-    }
-    #[cfg(feature = "websocket")]
-    if let Some(ref listeners) = main_config.websocket_listen {
-        let acceptor = main_config.tls_acceptor().die("invalid cert/key ?");
-        for listener in listeners {
-            handles.push(spawn_websocket_listener(listener.parse().die("invalid listener address"), config.clone(), acceptor.clone()));
         }
     }
     #[cfg(feature = "outgoing")]

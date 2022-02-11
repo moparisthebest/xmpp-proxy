@@ -6,32 +6,13 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
 // https://datatracker.ietf.org/doc/html/rfc7395
 
-pub fn spawn_websocket_listener(local_addr: SocketAddr, config: CloneableConfig, acceptor: TlsAcceptor) -> JoinHandle<Result<()>> {
-    tokio::spawn(async move {
-        let listener = TcpListener::bind(&local_addr).await.die("cannot listen on port/interface");
-        loop {
-            let (stream, client_addr) = listener.accept().await?;
-            let config = config.clone();
-            let acceptor = acceptor.clone();
-            tokio::spawn(async move {
-                let mut client_addr = Context::new("websocket-in", client_addr);
-                if let Err(e) = handle_websocket_connection(stream, &mut client_addr, local_addr, config, acceptor).await {
-                    error!("{} {}", client_addr.log_from(), e);
-                }
-            });
-        }
-        #[allow(unreachable_code)]
-        Ok(())
-    })
-}
-
-async fn handle_websocket_connection(stream: tokio::net::TcpStream, client_addr: &mut Context<'_>, local_addr: SocketAddr, config: CloneableConfig, acceptor: TlsAcceptor) -> Result<()> {
+pub async fn handle_websocket_connection(
+    stream: BufStream<tokio_rustls::TlsStream<tokio::net::TcpStream>>,
+    client_addr: &mut Context<'_>,
+    local_addr: SocketAddr,
+    config: CloneableConfig,
+) -> Result<()> {
     info!("{} connected", client_addr.log_from());
-
-    // start TLS
-    let stream = acceptor.accept(stream).await?;
-
-    let stream: tokio_rustls::TlsStream<tokio::net::TcpStream> = stream.into();
 
     // accept the websocket
     // todo: check SEC_WEBSOCKET_PROTOCOL or ORIGIN ?
@@ -106,6 +87,7 @@ pub fn to_ws_new(buf: &[u8], mut end_of_first_tag: usize, is_c2s: bool) -> Resul
 
 use rustls::ServerName;
 use std::convert::TryFrom;
+use tokio::io::BufStream;
 
 use tokio_rustls::TlsConnector;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -127,6 +109,8 @@ pub async fn websocket_connect(target: SocketAddr, server_name: &str, url: &Uri,
     let stream = connector.connect(dnsname, stream).await?;
 
     let stream: tokio_rustls::TlsStream<tokio::net::TcpStream> = stream.into();
+    // todo: tokio_tungstenite seems to have a bug, if the write buffer is non-zero, it'll hang forever, even though we always flush, investigate
+    let stream = BufStream::with_capacity(crate::IN_BUFFER_SIZE, 0, stream);
 
     let (stream, _) = tokio_tungstenite::client_async_with_config(request, stream, None).await?;
 

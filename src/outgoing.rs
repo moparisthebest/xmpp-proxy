@@ -7,8 +7,8 @@ async fn handle_outgoing_connection(stream: tokio::net::TcpStream, client_addr: 
 
     let (in_rd, in_wr) = tokio::io::split(stream);
 
-    let mut in_rd = StanzaRead::new(Box::new(in_rd));
-    let mut in_wr = StanzaWrite::new(Box::new(in_wr));
+    let mut in_rd = StanzaRead::new(in_rd);
+    let mut in_wr = StanzaWrite::new(in_wr);
 
     // now read to figure out client vs server
     let (stream_open, is_c2s) = stream_preamble(&mut in_rd, &mut in_wr, client_addr.log_to(), &mut in_filter).await?;
