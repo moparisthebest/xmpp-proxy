@@ -6,7 +6,7 @@ ipv4='192.5.0'
 # change to this directory
 cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")"
 
-usage() { echo "Usage: $0 [-i 192.5.0] [-d] [-r] [-b]" 1>&2; exit 1; }
+usage() { echo "Usage: $0 [-i 192.5.0] [-d] [-r] [-b] [-n]" 1>&2; exit 1; }
 
 build=0
 build_args=''
@@ -14,7 +14,7 @@ img='xmpp-proxy-test'
 xmpp_proxy_bind=''
 run_blocked=0
 ecdsa=0
-while getopts ":i:drbe" o; do
+while getopts ":i:drben" o; do
     case "${o}" in
         i)
             ipv4=${OPTARG}
@@ -35,6 +35,10 @@ while getopts ":i:drbe" o; do
             ;;
         b)
             run_blocked=1
+            ;;
+        n)
+            podman image rm -f "$img" "$img-dev" "$img-dev-ecdsa"
+            exit $?
             ;;
         *)
             usage
@@ -75,8 +79,8 @@ run_container() {
 
 cleanup() {
     set +e
-    podman stop -i -t 0 dns server1 server2 xp1 xp2 xp3 scansion
-    podman rm -f dns server1 server2 xp1 xp2 xp3 scansion
+    podman stop -i -t 0 dns server1 server2 xp1 xp2 xp3 web1 web2 scansion
+    podman rm -f dns server1 server2 xp1 xp2 xp3 web1 web2 scansion
     # this shuts down all containers first too, handy!
     podman network rm -f xmpp-proxy-net4
     set -e
@@ -100,6 +104,8 @@ run_test() {
     [ -f ./xmpp-proxy1.toml ] && run_container -d $xmpp_proxy_bind -v ./xmpp-proxy1.toml:/etc/xmpp-proxy/xmpp-proxy.toml:ro 40 xp1 xmpp-proxy
     [ -f ./xmpp-proxy2.toml ] && run_container -d $xmpp_proxy_bind -v ./xmpp-proxy2.toml:/etc/xmpp-proxy/xmpp-proxy.toml:ro 50 xp2 xmpp-proxy
     [ -f ./xmpp-proxy3.toml ] && run_container -d $xmpp_proxy_bind -v ./xmpp-proxy3.toml:/etc/xmpp-proxy/xmpp-proxy.toml:ro 60 xp3 xmpp-proxy
+    [ -f ./nginx1.conf ] && run_container -d -v ./nginx1.conf:/etc/nginx/nginx.conf:ro 70 web1 nginx
+    [ -f ./nginx2.conf ] && run_container -d -v ./nginx2.conf:/etc/nginx/nginx.conf:ro 80 web2 nginx
 
     # we don't care if these fail
     set +e
@@ -110,9 +116,9 @@ run_test() {
     set -e
 
     # run the actual tests
-    run_container 99 scansion scansion -d /scansion/
+    run_container 90 scansion scansion -d /scansion/
     # juliet_messages_romeo.scs  juliet_presence.scs  romeo_messages_juliet.scs  romeo_presence.scs
-    #run_container 99 scansion scansion /scansion/juliet_presence.scs /scansion/romeo_presence.scs
+    #run_container 90 scansion scansion /scansion/juliet_presence.scs /scansion/romeo_presence.scs
 
     cleanup
     )
