@@ -43,6 +43,7 @@ trust-dns-resolver = { version = "0.20", optional = true }
 # todo: feature to swap between webpki-roots and rustls-native-certs
 webpki-roots = { version = "0.22", optional = true }
 rustls-native-certs = { version = "0.6", optional = true }
+reqwest = { version = "0.11", optional = true, default-features = false, features = ["rustls-tls-native-roots", "json", "gzip", "trust-dns"] }
 
 # quic deps
 quinn = { version = "0.8", optional = true }
@@ -59,7 +60,7 @@ futures-util = { version = "0.3", default-features = false, features = ["async-a
 [features]
 default = ["incoming", "outgoing", "quic", "websocket", "logging"]
 incoming = ["tokio-rustls", "rustls-pemfile", "rustls"]
-outgoing = ["tokio-rustls", "trust-dns-resolver", "rustls-native-certs", "lazy_static", "rustls"]
+outgoing = ["tokio-rustls", "trust-dns-resolver", "rustls-native-certs", "lazy_static", "rustls", "reqwest"]
 quic = ["quinn", "rustls-pemfile", "rustls", "rustls-native-certs"]
 websocket = ["tokio-tungstenite", "futures-util", "tokio-rustls", "rustls-pemfile", "rustls", "rustls-native-certs"]
 logging = ["rand", "env_logger"]

@@ -128,13 +128,13 @@ mod tests {
     fn test_from_ws() {
         assert_eq!(
             from_ws(r#"<open xmlns="urn:ietf:params:xml:ns:xmpp-framing" version="1.0" to="test.moparisthe.best" xml:lang="en" />"#.to_string()),
-            r#"<?xml version='1.0'?><stream:stream xmlns="jabber:client" version="1.0" to="test.moparisthe.best" xml:lang="en"  xmlns:stream="http://etherx.jabber.org/streams">"#.to_string()
+            r#"<stream:stream xmlns="jabber:client" version="1.0" to="test.moparisthe.best" xml:lang="en"  xmlns:stream="http://etherx.jabber.org/streams">"#.to_string()
         );
         assert_eq!(from_ws(r#"<close xmlns="urn:ietf:params:xml:ns:xmpp-framing" />"#.to_string()), r#"</stream:stream>"#.to_string());
 
         assert_eq!(
             from_ws(r#"<open to='one.example.org' xmlns='urn:ietf:params:xml:ns:xmpp-framing' xmlns:stream='http://etherx.jabber.org/streams' version='1.0'/>"#.to_string()),
-            r#"<?xml version='1.0'?><stream:stream to='one.example.org' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams' version='1.0'>"#.to_string()
+            r#"<stream:stream to='one.example.org' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams' version='1.0'>"#.to_string()
         );
     }
 
