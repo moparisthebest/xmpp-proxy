@@ -302,6 +302,16 @@ pub async fn srv_connect(domain: &str, is_c2s: bool, stream_open: &[u8], in_filt
     bail!("all connection attempts failed")
 }
 
+#[cfg(not(feature = "websocket"))]
+async fn collect_host_meta_json(domain: &str, rel: &str) -> Result<Vec<String>> {
+    bail!("websocket disabled")
+}
+
+#[cfg(not(feature = "websocket"))]
+async fn collect_host_meta(domain: &str, rel: &str) -> Result<Vec<String>> {
+    bail!("websocket disabled")
+}
+
 #[cfg(feature = "websocket")]
 async fn collect_host_meta_json(domain: &str, rel: &str) -> Result<Vec<String>> {
     #[derive(Deserialize)]
