@@ -1,19 +1,18 @@
 use crate::*;
 use futures::StreamExt;
 use quinn::{ServerConfig, TransportConfig};
-use rustls::client::ClientConfig;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use anyhow::Result;
 
-pub async fn quic_connect(target: SocketAddr, server_name: &str, is_c2s: bool) -> Result<(StanzaWrite, StanzaRead)> {
+#[cfg(feature = "outgoing")]
+pub async fn quic_connect(target: SocketAddr, server_name: &str, is_c2s: bool, config: OutgoingConfig) -> Result<(StanzaWrite, StanzaRead)> {
     let bind_addr = "0.0.0.0:0".parse().unwrap();
-    let mut client_cfg = ClientConfig::builder().with_safe_defaults().with_root_certificates(root_cert_store()).with_no_client_auth(); // todo: for s2s do client auth
-    client_cfg.alpn_protocols.push(if is_c2s { ALPN_XMPP_CLIENT } else { ALPN_XMPP_SERVER }.to_vec());
+    let client_cfg = config.client_cfg_alpn(is_c2s);
 
     let mut endpoint = quinn::Endpoint::client(bind_addr)?;
-    endpoint.set_default_client_config(quinn::ClientConfig::new(Arc::new(client_cfg)));
+    endpoint.set_default_client_config(quinn::ClientConfig::new(client_cfg));
 
     // connect to server
     let quinn::NewConnection { connection, .. } = endpoint.connect(target, server_name)?.await?;
@@ -24,6 +23,7 @@ pub async fn quic_connect(target: SocketAddr, server_name: &str, is_c2s: bool) -
 }
 
 impl Config {
+    #[cfg(feature = "incoming")]
     pub fn quic_server_config(&self) -> Result<ServerConfig> {
         let transport_config = TransportConfig::default();
         // todo: configure transport_config here if needed

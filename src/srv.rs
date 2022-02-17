@@ -51,6 +51,7 @@ impl XmppConnection {
         stream_open: &[u8],
         in_filter: &mut crate::StanzaFilter,
         client_addr: &mut Context<'_>,
+        config: OutgoingConfig,
     ) -> Result<(StanzaWrite, StanzaRead, SocketAddr, &'static str)> {
         debug!("{} attempting connection to SRV: {:?}", client_addr.log_from(), self);
         // todo: need to set options to Ipv4AndIpv6
@@ -60,25 +61,27 @@ impl XmppConnection {
             debug!("{} trying ip {}", client_addr.log_from(), to_addr);
             // todo: for DNSSEC we need to optionally allow target in addition to domain, but what for SNI
             match self.conn_type {
-                XmppConnectionType::StartTLS => match crate::starttls_connect(to_addr, domain, is_c2s, stream_open, in_filter).await {
+                XmppConnectionType::StartTLS => match crate::starttls_connect(to_addr, domain, is_c2s, stream_open, in_filter, config.clone()).await {
                     Ok((wr, rd)) => return Ok((wr, rd, to_addr, "starttls-out")),
                     Err(e) => error!("starttls connection failed to IP {} from SRV {}, error: {}", to_addr, self.target, e),
                 },
-                XmppConnectionType::DirectTLS => match crate::tls_connect(to_addr, domain, is_c2s).await {
+                XmppConnectionType::DirectTLS => match crate::tls_connect(to_addr, domain, is_c2s, config.clone()).await {
                     Ok((wr, rd)) => return Ok((wr, rd, to_addr, "directtls-out")),
                     Err(e) => error!("direct tls connection failed to IP {} from SRV {}, error: {}", to_addr, self.target, e),
                 },
                 #[cfg(feature = "quic")]
-                XmppConnectionType::QUIC => match crate::quic_connect(to_addr, domain, is_c2s).await {
+                XmppConnectionType::QUIC => match crate::quic_connect(to_addr, domain, is_c2s, config.clone()).await {
                     Ok((wr, rd)) => return Ok((wr, rd, to_addr, "quic-out")),
                     Err(e) => error!("quic connection failed to IP {} from SRV {}, error: {}", to_addr, self.target, e),
                 },
                 #[cfg(feature = "websocket")]
                 // todo: when websocket is found via DNS, we need to validate cert against domain, *not* target, this is a security problem with XEP-0156, we are doing it the secure but likely unexpected way here for now
-                XmppConnectionType::WebSocket(ref url, ref origin, ref secure) => match crate::websocket_connect(to_addr, if *secure { &self.target } else { domain }, url, origin, is_c2s).await {
-                    Ok((wr, rd)) => return Ok((wr, rd, to_addr, "websocket-out")),
-                    Err(e) => error!("websocket connection failed to IP {} from TXT {}, error: {}", to_addr, url, e),
-                },
+                XmppConnectionType::WebSocket(ref url, ref origin, ref secure) => {
+                    match crate::websocket_connect(to_addr, if *secure { &self.target } else { domain }, url, origin, is_c2s, config.clone()).await {
+                        Ok((wr, rd)) => return Ok((wr, rd, to_addr, "websocket-out")),
+                        Err(e) => error!("websocket connection failed to IP {} from TXT {}, error: {}", to_addr, url, e),
+                    }
+                }
             }
         }
         bail!("cannot connect to any IPs for SRV: {}", self.target)
@@ -117,7 +120,7 @@ fn wss_to_srv(url: &str, secure: bool) -> Option<XmppConnection> {
             return None;
         }
     };
-    let target = server_name.clone().to_string();
+    let target = server_name.to_string();
 
     let mut origin = "https://".to_string();
     origin.push_str(&server_name);
@@ -274,9 +277,16 @@ pub async fn get_xmpp_connections(domain: &str, is_c2s: bool) -> Result<Vec<Xmpp
     Ok(ret)
 }
 
-pub async fn srv_connect(domain: &str, is_c2s: bool, stream_open: &[u8], in_filter: &mut crate::StanzaFilter, client_addr: &mut Context<'_>) -> Result<(StanzaWrite, StanzaRead, Vec<u8>)> {
+pub async fn srv_connect(
+    domain: &str,
+    is_c2s: bool,
+    stream_open: &[u8],
+    in_filter: &mut crate::StanzaFilter,
+    client_addr: &mut Context<'_>,
+    config: OutgoingConfig,
+) -> Result<(StanzaWrite, StanzaRead, Vec<u8>)> {
     for srv in get_xmpp_connections(domain, is_c2s).await? {
-        let connect = srv.connect(domain, is_c2s, stream_open, in_filter, client_addr).await;
+        let connect = srv.connect(domain, is_c2s, stream_open, in_filter, client_addr, config.clone()).await;
         if connect.is_err() {
             continue;
         }
@@ -338,12 +348,12 @@ async fn collect_host_meta_json(domain: &str, rel: &str) -> Result<Vec<String>> 
 #[cfg(feature = "websocket")]
 async fn parse_host_meta(rel: &str, bytes: &[u8]) -> Result<Vec<String>> {
     let mut vec = Vec::new();
-    let mut stanza_reader = StanzaReader(bytes.as_ref());
+    let mut stanza_reader = StanzaReader(bytes);
     let mut filter = StanzaFilter::new(8192);
     while let Some((stanza, eoft)) = stanza_reader.next_eoft(&mut filter).await? {
         if stanza.starts_with(b"<XRD") || stanza.starts_with(b"<xrd") {
             // now we are to the Links
-            let stanza = (&stanza[eoft..]).clone();
+            let stanza = &stanza[eoft..];
             let mut stanza_reader = StanzaReader(stanza);
             let mut filter = StanzaFilter::new(4096);
             while let Ok(Some(stanza)) = stanza_reader.next(&mut filter).await {
