@@ -64,7 +64,7 @@ const IN_BUFFER_SIZE: usize = 8192;
 const ALPN_XMPP_CLIENT: &[u8] = b"xmpp-client";
 const ALPN_XMPP_SERVER: &[u8] = b"xmpp-server";
 
-#[cfg(feature = "webpki-roots")]
+#[cfg(all(feature = "webpki-roots", not(feature = "rustls-native-certs")))]
 pub fn root_cert_store() -> rustls::RootCertStore {
     use rustls::{OwnedTrustAnchor, RootCertStore};
     let mut root_cert_store = RootCertStore::empty();
@@ -77,7 +77,7 @@ pub fn root_cert_store() -> rustls::RootCertStore {
     root_cert_store
 }
 
-#[cfg(feature = "rustls-native-certs")]
+#[cfg(all(feature = "rustls-native-certs", not(feature = "webpki-roots")))]
 pub fn root_cert_store() -> rustls::RootCertStore {
     use rustls::RootCertStore;
     let mut root_cert_store = RootCertStore::empty();
@@ -194,7 +194,9 @@ impl Config {
         let (tls_certs, tls_key) = self.certs_key()?;
 
         // todo: request client auth here
-        let config = ServerConfig::builder().with_safe_defaults().with_no_client_auth().with_single_cert(tls_certs, tls_key)?;
+        let mut config = ServerConfig::builder().with_safe_defaults().with_no_client_auth().with_single_cert(tls_certs, tls_key)?;
+        config.alpn_protocols.push(ALPN_XMPP_CLIENT.to_vec());
+        config.alpn_protocols.push(ALPN_XMPP_SERVER.to_vec());
 
         Ok(config)
     }

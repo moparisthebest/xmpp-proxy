@@ -61,8 +61,8 @@ futures-util = { version = "0.3", default-features = false, features = ["async-a
 default = ["incoming", "outgoing", "quic", "websocket", "logging"]
 incoming = ["tokio-rustls", "rustls-pemfile", "rustls"]
 outgoing = ["tokio-rustls", "trust-dns-resolver", "rustls-native-certs", "lazy_static", "rustls", "reqwest", "rustls-pemfile"]
-quic = ["quinn", "rustls-pemfile", "rustls", "rustls-native-certs"]
-websocket = ["tokio-tungstenite", "futures-util", "tokio-rustls", "rustls-pemfile", "rustls", "rustls-native-certs"]
+quic = ["quinn", "rustls-pemfile", "rustls"]
+websocket = ["tokio-tungstenite", "futures-util", "tokio-rustls", "rustls-pemfile", "rustls"]
 logging = ["rand", "env_logger"]
 
 [package.metadata.cargo-all-features]
