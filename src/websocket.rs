@@ -6,6 +6,15 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
 // https://datatracker.ietf.org/doc/html/rfc7395
 
+fn ws_cfg(max_stanza_size_bytes: usize) -> Option<WebSocketConfig> {
+    Some(WebSocketConfig {
+        max_send_queue: None,                              // unlimited
+        max_frame_size: Some(max_stanza_size_bytes),       // this is exactly the stanza size
+        max_message_size: Some(max_stanza_size_bytes * 4), // this is the message size, default is 4x frame size, so I guess we'll do the same here
+        accept_unmasked_frames: true,
+    })
+}
+
 pub async fn handle_websocket_connection(
     stream: BufStream<tokio_rustls::TlsStream<tokio::net::TcpStream>>,
     client_addr: &mut Context<'_>,
@@ -16,16 +25,7 @@ pub async fn handle_websocket_connection(
 
     // accept the websocket
     // todo: check SEC_WEBSOCKET_PROTOCOL or ORIGIN ?
-    let stream = tokio_tungstenite::accept_async_with_config(
-        stream,
-        Some(WebSocketConfig {
-            max_send_queue: None,                                     // unlimited
-            max_frame_size: Some(config.max_stanza_size_bytes),       // this is exactly the stanza size
-            max_message_size: Some(config.max_stanza_size_bytes * 4), // this is the message size, default is 4x frame size, so I guess we'll do the same here
-            accept_unmasked_frames: true,
-        }),
-    )
-    .await?;
+    let stream = tokio_tungstenite::accept_async_with_config(stream, ws_cfg(config.max_stanza_size_bytes)).await?;
 
     let (in_wr, in_rd) = stream.split();
 
@@ -89,30 +89,25 @@ use rustls::ServerName;
 use std::convert::TryFrom;
 use tokio::io::BufStream;
 
-use tokio_rustls::TlsConnector;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::{ORIGIN, SEC_WEBSOCKET_PROTOCOL};
 use tokio_tungstenite::tungstenite::http::Uri;
 
-pub async fn websocket_connect(target: SocketAddr, server_name: &str, url: &Uri, origin: &str, _is_c2s: bool) -> Result<(StanzaWrite, StanzaRead)> {
-    // todo: WebSocketConfig
-    // todo: static ? alpn? client cert auth for server
-    let connector = rustls::ClientConfig::builder().with_safe_defaults().with_root_certificates(root_cert_store()).with_no_client_auth();
-
+#[cfg(feature = "outgoing")]
+pub async fn websocket_connect(target: SocketAddr, server_name: &str, url: &Uri, origin: &str, is_c2s: bool, config: OutgoingConfig) -> Result<(StanzaWrite, StanzaRead)> {
     let mut request = url.into_client_request()?;
     request.headers_mut().append(SEC_WEBSOCKET_PROTOCOL, "xmpp".parse()?);
     request.headers_mut().append(ORIGIN, origin.parse()?);
 
     let dnsname = ServerName::try_from(server_name)?;
     let stream = tokio::net::TcpStream::connect(target).await?;
-    let connector = TlsConnector::from(Arc::new(connector));
-    let stream = connector.connect(dnsname, stream).await?;
+    let stream = config.connector(is_c2s).connect(dnsname, stream).await?;
 
     let stream: tokio_rustls::TlsStream<tokio::net::TcpStream> = stream.into();
     // todo: tokio_tungstenite seems to have a bug, if the write buffer is non-zero, it'll hang forever, even though we always flush, investigate
     let stream = BufStream::with_capacity(crate::IN_BUFFER_SIZE, 0, stream);
 
-    let (stream, _) = tokio_tungstenite::client_async_with_config(request, stream, None).await?;
+    let (stream, _) = tokio_tungstenite::client_async_with_config(request, stream, ws_cfg(config.max_stanza_size_bytes)).await?;
 
     let (wrt, rd) = stream.split();
 

@@ -63,7 +63,7 @@ COPY --from=build /usr/bin/true /build/target/release/xmpp-prox[y] /usr/bin/
 COPY ./integration/named.conf /etc/
 COPY ./integration/00-no-tls/example.org.zone /var/named/
 COPY ./integration/00-no-tls/prosody1.cfg.lua /etc/prosody/prosody.cfg.lua
-COPY ./contrib/prosody-modules /usr/lib/prosody/modules
+COPY ./contrib/prosody-modules /opt/xmpp-proxy/prosody-modules
 COPY ./integration/*.scs /scansion/
 
 ARG ECDSA=0

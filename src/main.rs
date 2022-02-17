@@ -18,11 +18,11 @@ use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
 #[cfg(feature = "rustls")]
-use rustls::{Certificate, PrivateKey, ServerConfig};
+use rustls::{Certificate, ClientConfig, PrivateKey, ServerConfig};
 #[cfg(feature = "rustls-pemfile")]
 use rustls_pemfile::{certs, pkcs8_private_keys};
 #[cfg(feature = "tokio-rustls")]
-use tokio_rustls::TlsAcceptor;
+use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use anyhow::{bail, Result};
 
@@ -129,8 +129,51 @@ impl Config {
         }
     }
 
-    #[cfg(all(feature = "rustls-pemfile", feature = "rustls"))]
-    fn server_config(&self) -> Result<ServerConfig> {
+    #[cfg(feature = "outgoing")]
+    fn get_outgoing_cfg(&self) -> OutgoingConfig {
+        let c2s_config = ClientConfig::builder().with_safe_defaults().with_root_certificates(root_cert_store()).with_no_client_auth();
+        let s2s_config = match self.certs_key().and_then(|(tls_certs, tls_key)| {
+            Ok(ClientConfig::builder()
+                .with_safe_defaults()
+                .with_root_certificates(root_cert_store())
+                .with_single_cert(tls_certs, tls_key)?)
+        }) {
+            Ok(s) => s,
+            Err(e) => {
+                debug!("invalid key/cert for s2s client auth: {}", e);
+                c2s_config.clone()
+            }
+        };
+        // uncomment to disable cert auth/sasl external
+        //let s2s_config = c2s_config.clone();
+
+        let mut c2s_config_alpn = c2s_config.clone();
+        let mut s2s_config_alpn = s2s_config.clone();
+        c2s_config_alpn.alpn_protocols.push(ALPN_XMPP_CLIENT.to_vec());
+        s2s_config_alpn.alpn_protocols.push(ALPN_XMPP_SERVER.to_vec());
+
+        let c2s_config_alpn = Arc::new(c2s_config_alpn);
+        let s2s_config_alpn = Arc::new(s2s_config_alpn);
+
+        let c2s_connector_alpn: TlsConnector = c2s_config_alpn.clone().into();
+        let s2s_connector_alpn: TlsConnector = s2s_config_alpn.clone().into();
+
+        let c2s_connector: TlsConnector = Arc::new(c2s_config).into();
+        let s2s_connector: TlsConnector = Arc::new(s2s_config).into();
+
+        OutgoingConfig {
+            max_stanza_size_bytes: self.max_stanza_size_bytes,
+            c2s_config_alpn,
+            s2s_config_alpn,
+            c2s_connector_alpn,
+            s2s_connector_alpn,
+            c2s_connector,
+            s2s_connector,
+        }
+    }
+
+    #[cfg(any(feature = "outgoing", feature = "incoming"))]
+    fn certs_key(&self) -> Result<(Vec<Certificate>, PrivateKey)> {
         let mut tls_key: Vec<PrivateKey> = pkcs8_private_keys(&mut BufReader::new(File::open(&self.tls_key)?))
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))
             .map(|mut keys| keys.drain(..).map(PrivateKey).collect())?;
@@ -143,14 +186,63 @@ impl Config {
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid cert"))
             .map(|mut certs| certs.drain(..).map(Certificate).collect())?;
 
+        Ok((tls_certs, tls_key))
+    }
+
+    #[cfg(feature = "incoming")]
+    fn server_config(&self) -> Result<ServerConfig> {
+        let (tls_certs, tls_key) = self.certs_key()?;
+
+        // todo: request client auth here
         let config = ServerConfig::builder().with_safe_defaults().with_no_client_auth().with_single_cert(tls_certs, tls_key)?;
 
         Ok(config)
     }
 
-    #[cfg(all(feature = "tokio-rustls", feature = "rustls-pemfile", feature = "rustls"))]
+    #[cfg(feature = "incoming")]
     fn tls_acceptor(&self) -> Result<TlsAcceptor> {
         Ok(TlsAcceptor::from(Arc::new(self.server_config()?)))
+    }
+}
+
+#[derive(Clone)]
+#[cfg(feature = "outgoing")]
+pub struct OutgoingConfig {
+    max_stanza_size_bytes: usize,
+
+    c2s_config_alpn: Arc<ClientConfig>,
+    s2s_config_alpn: Arc<ClientConfig>,
+    c2s_connector_alpn: TlsConnector,
+    s2s_connector_alpn: TlsConnector,
+
+    c2s_connector: TlsConnector,
+    s2s_connector: TlsConnector,
+}
+
+#[cfg(feature = "outgoing")]
+impl OutgoingConfig {
+    pub fn client_cfg_alpn(&self, is_c2s: bool) -> Arc<ClientConfig> {
+        if is_c2s {
+            self.c2s_config_alpn.clone()
+        } else {
+            self.s2s_config_alpn.clone()
+        }
+    }
+
+    pub fn connector_alpn(&self, is_c2s: bool) -> TlsConnector {
+        if is_c2s {
+            self.c2s_connector_alpn.clone()
+        } else {
+            self.s2s_connector_alpn.clone()
+        }
+    }
+
+    pub fn connector(&self, is_c2s: bool) -> TlsConnector {
+        if is_c2s {
+            self.c2s_connector.clone()
+        } else {
+            self.s2s_connector.clone()
+        }
     }
 }
 
@@ -318,7 +410,7 @@ async fn main() {
             handles.push(spawn_tls_listener(listener.parse().die("invalid listener address"), config.clone(), acceptor.clone()));
         }
     }
-    #[cfg(feature = "quic")]
+    #[cfg(all(feature = "quic", feature = "incoming"))]
     if let Some(ref listeners) = main_config.quic_listen {
         let quic_config = main_config.quic_server_config().die("invalid cert/key ?");
         for listener in listeners {
@@ -327,8 +419,9 @@ async fn main() {
     }
     #[cfg(feature = "outgoing")]
     if let Some(ref listeners) = main_config.outgoing_listen {
+        let outgoing_cfg = main_config.get_outgoing_cfg();
         for listener in listeners {
-            handles.push(spawn_outgoing_listener(listener.parse().die("invalid listener address"), config.max_stanza_size_bytes));
+            handles.push(spawn_outgoing_listener(listener.parse().die("invalid listener address"), outgoing_cfg.clone()));
         }
     }
     info!("xmpp-proxy started");

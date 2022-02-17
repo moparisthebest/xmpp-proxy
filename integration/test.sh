@@ -61,9 +61,9 @@ run_container() {
         args+=("-d")
         shift
     fi
-    while [ "$1" == "-v" ]
+    while [ "$1" == "-v" -o "$1" == "-w" ]
     do
-        args+=("-v")
+        args+=("$1")
         shift
         args+=("$1")
         shift
@@ -116,9 +116,9 @@ run_test() {
     set -e
 
     # run the actual tests
-    run_container 90 scansion scansion -d /scansion/
+    tests="$(cat tests || echo "-d .")"
+    run_container -w /scansion/ 90 scansion scansion $tests
     # juliet_messages_romeo.scs  juliet_presence.scs  romeo_messages_juliet.scs  romeo_presence.scs
-    #run_container 90 scansion scansion /scansion/juliet_presence.scs /scansion/romeo_presence.scs
 
     cleanup
     )

@@ -3,46 +3,19 @@ use std::convert::TryFrom;
 use tokio::io::{AsyncBufReadExt, BufStream};
 
 #[cfg(any(feature = "incoming", feature = "outgoing"))]
-use tokio_rustls::{
-    rustls::{client::ClientConfig, ServerName},
-    TlsConnector,
-};
+use tokio_rustls::rustls::ServerName;
 
 #[cfg(feature = "outgoing")]
-lazy_static::lazy_static! {
-    static ref CLIENT_TLS_CONFIG: TlsConnector = {
-        let mut config = ClientConfig::builder()
-        .with_safe_defaults()
-        .with_root_certificates(root_cert_store())
-        .with_no_client_auth();
-        config.alpn_protocols.push(ALPN_XMPP_CLIENT.to_vec());
-        TlsConnector::from(Arc::new(config))
-    };
-    static ref SERVER_TLS_CONFIG: TlsConnector = {
-        let mut config = ClientConfig::builder()
-        .with_safe_defaults()
-        .with_root_certificates(root_cert_store())
-        .with_no_client_auth(); // todo: do client auth...
-        config.alpn_protocols.push(ALPN_XMPP_SERVER.to_vec());
-        TlsConnector::from(Arc::new(config))
-    };
-}
-
-#[cfg(feature = "outgoing")]
-pub async fn tls_connect(target: SocketAddr, server_name: &str, is_c2s: bool) -> Result<(StanzaWrite, StanzaRead)> {
+pub async fn tls_connect(target: SocketAddr, server_name: &str, is_c2s: bool, config: OutgoingConfig) -> Result<(StanzaWrite, StanzaRead)> {
     let dnsname = ServerName::try_from(server_name)?;
     let stream = tokio::net::TcpStream::connect(target).await?;
-    let stream = if is_c2s {
-        CLIENT_TLS_CONFIG.connect(dnsname, stream).await?
-    } else {
-        SERVER_TLS_CONFIG.connect(dnsname, stream).await?
-    };
+    let stream = config.connector_alpn(is_c2s).connect(dnsname, stream).await?;
     let (rd, wrt) = tokio::io::split(stream);
     Ok((StanzaWrite::new(wrt), StanzaRead::new(rd)))
 }
 
 #[cfg(feature = "outgoing")]
-pub async fn starttls_connect(target: SocketAddr, server_name: &str, is_c2s: bool, stream_open: &[u8], in_filter: &mut StanzaFilter) -> Result<(StanzaWrite, StanzaRead)> {
+pub async fn starttls_connect(target: SocketAddr, server_name: &str, is_c2s: bool, stream_open: &[u8], in_filter: &mut StanzaFilter, config: OutgoingConfig) -> Result<(StanzaWrite, StanzaRead)> {
     let dnsname = ServerName::try_from(server_name)?;
     let mut stream = tokio::net::TcpStream::connect(target).await?;
     let (in_rd, mut in_wr) = stream.split();
@@ -80,11 +53,7 @@ pub async fn starttls_connect(target: SocketAddr, server_name: &str, is_c2s: boo
     }
 
     debug!("starttls starting TLS {}", server_name);
-    let stream = if is_c2s {
-        CLIENT_TLS_CONFIG.connect(dnsname, stream).await?
-    } else {
-        SERVER_TLS_CONFIG.connect(dnsname, stream).await?
-    };
+    let stream = config.connector(is_c2s).connect(dnsname, stream).await?;
     let (rd, wrt) = tokio::io::split(stream);
     Ok((StanzaWrite::new(wrt), StanzaRead::new(rd)))
 }

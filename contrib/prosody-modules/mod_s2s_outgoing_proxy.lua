@@ -28,3 +28,10 @@ module:hook("route/remote", function(event)
 	return true;
 end, -2);
 
+-- is this the best place to do this?
+module:hook_tag("http://etherx.jabber.org/streams", "features", function (session, stanza)
+	if session.type == "s2sout_unauthed" then
+        module:log("debug", "marking hook session.type '%s' secure!", session.type);
+        session.secure = true;
+	end
+end, 3000);
