@@ -7,6 +7,8 @@ use slicesubsequence::*;
 use std::net::SocketAddr;
 
 pub use log::{debug, error, info, log_enabled, trace};
+use rustls::{Certificate, ServerConnection};
+use tokio_rustls::webpki::DnsNameRef;
 
 pub fn to_str(buf: &[u8]) -> std::borrow::Cow<'_, str> {
     String::from_utf8_lossy(buf)
@@ -123,6 +125,58 @@ impl<'a> Context<'a> {
         if log_enabled!(log::Level::Info) {
             self.to_addr = Some(to_addr);
             self.re_calc();
+        }
+    }
+}
+
+#[cfg(feature = "incoming")]
+#[derive(Clone)]
+pub enum ServerCerts {
+    Tls(&'static ServerConnection),
+    #[cfg(feature = "quic")]
+    Quic(quinn::Connection),
+}
+
+impl ServerCerts {
+    pub fn valid(&self, dns_name: DnsNameRef) -> bool {
+        use std::convert::TryFrom;
+        use tokio_rustls::webpki;
+        self.first_peer_cert()
+            .and_then(|c| {
+                if let Ok(cert) = webpki::EndEntityCert::try_from(c.0.as_ref()) {
+                    cert.verify_is_valid_for_dns_name(dns_name).map(|_| true).ok()
+                } else {
+                    Some(false)
+                }
+            })
+            .unwrap_or(false)
+    }
+
+    pub fn first_peer_cert(&self) -> Option<Certificate> {
+        match self {
+            ServerCerts::Tls(c) => c.peer_certificates().map(|c| c[0].clone()),
+            ServerCerts::Quic(c) => c.peer_identity().and_then(|v| v.downcast::<Vec<Certificate>>().ok()).map(|v| v[0].clone()),
+        }
+    }
+
+    pub fn sni(&self) -> Option<String> {
+        match self {
+            ServerCerts::Tls(c) => c.sni_hostname().map(|s| s.to_string()),
+            ServerCerts::Quic(c) => c.handshake_data().and_then(|v| v.downcast::<quinn::crypto::rustls::HandshakeData>().ok()).and_then(|h| h.server_name),
+        }
+    }
+
+    pub fn alpn(&self) -> Option<Vec<u8>> {
+        match self {
+            ServerCerts::Tls(c) => c.alpn_protocol().map(|s| s.to_vec()),
+            ServerCerts::Quic(c) => c.handshake_data().and_then(|v| v.downcast::<quinn::crypto::rustls::HandshakeData>().ok()).and_then(|h| h.protocol),
+        }
+    }
+
+    pub fn is_tls(&self) -> bool {
+        match self {
+            ServerCerts::Tls(_) => true,
+            ServerCerts::Quic(_) => false,
         }
     }
 }
