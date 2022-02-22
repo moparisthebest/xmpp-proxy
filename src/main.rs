@@ -22,7 +22,10 @@ use rustls::{Certificate, ClientConfig, PrivateKey, ServerConfig};
 #[cfg(feature = "rustls-pemfile")]
 use rustls_pemfile::{certs, pkcs8_private_keys};
 #[cfg(feature = "tokio-rustls")]
-use tokio_rustls::{TlsAcceptor, TlsConnector};
+use tokio_rustls::{
+    webpki::{DnsNameRef, TlsServerTrustAnchors, TrustAnchor},
+    TlsAcceptor, TlsConnector,
+};
 
 use anyhow::{bail, Result};
 
@@ -54,6 +57,9 @@ mod websocket;
 #[cfg(feature = "websocket")]
 use crate::websocket::*;
 
+mod verify;
+use crate::verify::*;
+
 mod in_out;
 pub use crate::in_out::*;
 
@@ -65,25 +71,33 @@ const ALPN_XMPP_CLIENT: &[u8] = b"xmpp-client";
 const ALPN_XMPP_SERVER: &[u8] = b"xmpp-server";
 
 #[cfg(all(feature = "webpki-roots", not(feature = "rustls-native-certs")))]
+pub use webpki_roots::TLS_SERVER_ROOTS;
+
+#[cfg(all(feature = "rustls-native-certs", not(feature = "webpki-roots")))]
+lazy_static::lazy_static! {
+    static ref TLS_SERVER_ROOTS: TlsServerTrustAnchors<'static> = {
+        // we need these to stick around for 'static, this is only called once so no problem
+        let certs = Box::leak(Box::new(rustls_native_certs::load_native_certs().expect("could not load platform certs")));
+        let root_cert_store = Box::leak(Box::new(Vec::new()));
+        for cert in certs {
+            // some system CAs are invalid, ignore those
+            if let Ok(ta) = TrustAnchor::try_from_cert_der(&cert.0) {
+                root_cert_store.push(ta);
+            }
+        }
+        TlsServerTrustAnchors(root_cert_store)
+    };
+}
+
 pub fn root_cert_store() -> rustls::RootCertStore {
     use rustls::{OwnedTrustAnchor, RootCertStore};
     let mut root_cert_store = RootCertStore::empty();
     root_cert_store.add_server_trust_anchors(
-        webpki_roots::TLS_SERVER_ROOTS
+        TLS_SERVER_ROOTS
             .0
             .iter()
             .map(|ta| OwnedTrustAnchor::from_subject_spki_name_constraints(ta.subject, ta.spki, ta.name_constraints)),
     );
-    root_cert_store
-}
-
-#[cfg(all(feature = "rustls-native-certs", not(feature = "webpki-roots")))]
-pub fn root_cert_store() -> rustls::RootCertStore {
-    use rustls::RootCertStore;
-    let mut root_cert_store = RootCertStore::empty();
-    for cert in rustls_native_certs::load_native_certs().expect("could not load platform certs") {
-        root_cert_store.add(&rustls::Certificate(cert.0)).unwrap();
-    }
     root_cert_store
 }
 
@@ -193,8 +207,11 @@ impl Config {
     fn server_config(&self) -> Result<ServerConfig> {
         let (tls_certs, tls_key) = self.certs_key()?;
 
-        // todo: request client auth here
-        let mut config = ServerConfig::builder().with_safe_defaults().with_no_client_auth().with_single_cert(tls_certs, tls_key)?;
+        let mut config = ServerConfig::builder()
+            .with_safe_defaults()
+            .with_client_cert_verifier(Arc::new(AllowAnyAnonymousOrAuthenticatedServer))
+            .with_single_cert(tls_certs, tls_key)?;
+        // todo: will connecting without alpn work then?
         config.alpn_protocols.push(ALPN_XMPP_CLIENT.to_vec());
         config.alpn_protocols.push(ALPN_XMPP_SERVER.to_vec());
 
@@ -248,21 +265,44 @@ impl OutgoingConfig {
     }
 }
 
-async fn shuffle_rd_wr(in_rd: StanzaRead, in_wr: StanzaWrite, config: CloneableConfig, local_addr: SocketAddr, client_addr: &mut Context<'_>) -> Result<()> {
+async fn shuffle_rd_wr(in_rd: StanzaRead, in_wr: StanzaWrite, config: CloneableConfig, server_certs: ServerCerts, local_addr: SocketAddr, client_addr: &mut Context<'_>) -> Result<()> {
     let filter = StanzaFilter::new(config.max_stanza_size_bytes);
-    shuffle_rd_wr_filter(in_rd, in_wr, config, local_addr, client_addr, filter).await
+    shuffle_rd_wr_filter(in_rd, in_wr, config, server_certs, local_addr, client_addr, filter).await
 }
 
 async fn shuffle_rd_wr_filter(
     mut in_rd: StanzaRead,
     mut in_wr: StanzaWrite,
     config: CloneableConfig,
+    server_certs: ServerCerts,
     local_addr: SocketAddr,
     client_addr: &mut Context<'_>,
     mut in_filter: StanzaFilter,
 ) -> Result<()> {
     // now read to figure out client vs server
     let (stream_open, is_c2s) = stream_preamble(&mut in_rd, &mut in_wr, client_addr.log_from(), &mut in_filter).await?;
+    client_addr.set_c2s_stream_open(is_c2s, &stream_open);
+
+    trace!(
+        "{} connected: sni: {:?}, alpn: {:?}, tls-not-quic: {}",
+        client_addr.log_from(),
+        server_certs.sni(),
+        server_certs.alpn().map(|a| String::from_utf8_lossy(&a).to_string()),
+        server_certs.is_tls(),
+    );
+
+    if !is_c2s {
+        // for s2s we need this
+        let dns_from = stream_open
+            .extract_between(b" from='", b"'")
+            .or_else(|_| stream_open.extract_between(b" from=\"", b"\""))
+            .and_then(|b| Ok(DnsNameRef::try_from_ascii(b)?))?;
+        if !server_certs.valid(dns_from) {
+            // todo: send stream error saying cert is invalid
+            bail!("server certificate invalid for {:?}", dns_from);
+        }
+    }
+    drop(server_certs);
 
     let (out_rd, out_wr) = open_incoming(&config, local_addr, client_addr, &stream_open, is_c2s, &mut in_filter).await?;
     drop(stream_open);
@@ -332,7 +372,6 @@ async fn open_incoming(
 ) -> Result<(ReadHalf<tokio::net::TcpStream>, WriteHalf<tokio::net::TcpStream>)> {
     let target = if is_c2s { config.c2s_target } else { config.s2s_target };
     client_addr.set_to_addr(target);
-    client_addr.set_c2s_stream_open(is_c2s, stream_open);
 
     let out_stream = tokio::net::TcpStream::connect(target).await?;
     let (out_rd, mut out_wr) = tokio::io::split(out_stream);

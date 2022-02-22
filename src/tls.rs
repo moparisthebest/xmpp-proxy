@@ -1,4 +1,5 @@
 use crate::*;
+use rustls::ServerConnection;
 use std::convert::TryFrom;
 use tokio::io::{AsyncBufReadExt, BufStream};
 
@@ -172,16 +173,29 @@ async fn handle_tls_connection(mut stream: tokio::net::TcpStream, client_addr: &
     }
 
     let stream = acceptor.accept(stream).await?;
+    let (_, server_connection) = stream.get_ref();
+
+    // todo: find better way to do this, might require different tokio_rustls API, the problem is I can't hold this
+    // past stream.into() below, and I can't get it back out after, now I *could* read sni+alpn+peer_certs
+    // *here* instead and pass them on, but since I haven't read anything from the stream yet, I'm
+    // not guaranteed that the handshake is complete and these are available, yes I can call is_handshaking()
+    // but there is no async API to complete the handshake, so I really need to pass it down to under
+    // where we read the first stanza, where we are guaranteed the handshake is complete, but I can't
+    // do that without ignoring the lifetime and just pulling a C programmer and pinky promising to be
+    // *very careful* that this reference doesn't outlive stream...
+    let server_connection: &'static ServerConnection = unsafe { std::mem::transmute(server_connection) };
+    let server_certs = ServerCerts::Tls(server_connection);
 
     #[cfg(not(feature = "websocket"))]
     {
         let (in_rd, in_wr) = tokio::io::split(stream);
-        shuffle_rd_wr_filter(StanzaRead::new(in_rd), StanzaWrite::new(in_wr), config, local_addr, client_addr, in_filter).await
+        shuffle_rd_wr_filter(StanzaRead::new(in_rd), StanzaWrite::new(in_wr), config, server_certs, local_addr, client_addr, in_filter).await
     }
 
     #[cfg(feature = "websocket")]
     {
         let stream: tokio_rustls::TlsStream<tokio::net::TcpStream> = stream.into();
+
         let mut stream = BufStream::with_capacity(crate::IN_BUFFER_SIZE, 0, stream);
         let websocket = {
             // wait up to 10 seconds until 3 bytes have been read
@@ -206,10 +220,10 @@ async fn handle_tls_connection(mut stream: tokio::net::TcpStream, client_addr: &
         };
 
         if websocket {
-            handle_websocket_connection(stream, client_addr, local_addr, config).await
+            handle_websocket_connection(stream, config, server_certs, local_addr, client_addr, in_filter).await
         } else {
             let (in_rd, in_wr) = tokio::io::split(stream);
-            shuffle_rd_wr_filter(StanzaRead::already_buffered(in_rd), StanzaWrite::new(in_wr), config, local_addr, client_addr, in_filter).await
+            shuffle_rd_wr_filter(StanzaRead::already_buffered(in_rd), StanzaWrite::new(in_wr), config, server_certs, local_addr, client_addr, in_filter).await
         }
     }
 }

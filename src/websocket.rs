@@ -17,10 +17,13 @@ fn ws_cfg(max_stanza_size_bytes: usize) -> Option<WebSocketConfig> {
 
 pub async fn handle_websocket_connection(
     stream: BufStream<tokio_rustls::TlsStream<tokio::net::TcpStream>>,
-    client_addr: &mut Context<'_>,
-    local_addr: SocketAddr,
     config: CloneableConfig,
+    server_certs: ServerCerts,
+    local_addr: SocketAddr,
+    client_addr: &mut Context<'_>,
+    in_filter: StanzaFilter,
 ) -> Result<()> {
+    client_addr.set_proto("websocket-in");
     info!("{} connected", client_addr.log_from());
 
     // accept the websocket
@@ -29,9 +32,16 @@ pub async fn handle_websocket_connection(
 
     let (in_wr, in_rd) = stream.split();
 
-    let in_filter = StanzaFilter::new(config.max_stanza_size_bytes);
-
-    shuffle_rd_wr_filter(StanzaRead::WebSocketRead(in_rd), StanzaWrite::WebSocketClientWrite(in_wr), config, local_addr, client_addr, in_filter).await
+    shuffle_rd_wr_filter(
+        StanzaRead::WebSocketRead(in_rd),
+        StanzaWrite::WebSocketClientWrite(in_wr),
+        config,
+        server_certs,
+        local_addr,
+        client_addr,
+        in_filter,
+    )
+    .await
 }
 
 pub fn from_ws(stanza: String) -> String {
