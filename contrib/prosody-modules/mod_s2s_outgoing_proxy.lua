@@ -28,10 +28,22 @@ module:hook("route/remote", function(event)
 	return true;
 end, -2);
 
--- is this the best place to do this?
+-- todo: is this the best place to do these hooks?
+-- this hook marks outgoing s2s as secure so we accept SASL EXTERNAL on it
 module:hook_tag("http://etherx.jabber.org/streams", "features", function (session, stanza)
 	if session.type == "s2sout_unauthed" then
         module:log("debug", "marking hook session.type '%s' secure!", session.type);
         session.secure = true;
 	end
+end, 3000);
+
+-- this hook marks incoming s2s as secure so we offer SASL EXTERNAL on it
+module:hook("s2s-stream-features", function(event)
+	local session, features = event.origin, event.features;
+	if session.type == "s2sin_unauthed" then
+        module:log("debug", "marking hook session.type '%s' secure with validated cert!", session.type);
+	    session.secure = true;
+    	session.cert_chain_status = "valid";
+    	session.cert_identity_status = "valid";
+    end
 end, 3000);
