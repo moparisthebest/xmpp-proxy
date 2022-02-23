@@ -101,7 +101,7 @@ which also works for s2s.
 
 Add this config:
 ```
--- trust connections coming from these IPs
+-- trust connections coming to these IPs
 secure_interfaces = { "127.0.0.1", "::1" }
 
 -- handle PROXY protocol on these ports
