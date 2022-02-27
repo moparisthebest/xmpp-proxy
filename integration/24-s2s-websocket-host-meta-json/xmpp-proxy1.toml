@@ -28,8 +28,8 @@ max_stanza_size_bytes = 262_144
 
 # TLS key/certificate valid for all your XMPP domains, PEM format
 # included systemd unit can only read files from /etc/xmpp-proxy/ so put them in there
-tls_key = "/etc/prosody/certs/wildcard.key"
-tls_cert = "/etc/prosody/certs/wildcard.crt"
+tls_key = "/etc/prosody/certs/xp1.example.org.key"
+tls_cert = "/etc/prosody/certs/xp1.example.org.crt"
 
 # configure logging, defaults are commented
 # can also set env variables XMPP_PROXY_LOG_LEVEL and/or XMPP_PROXY_LOG_STYLE, but values in this file override them
