@@ -8,6 +8,7 @@ use std::iter::Iterator;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use die::Die;
 
@@ -27,7 +28,7 @@ use tokio_rustls::{
     TlsAcceptor, TlsConnector,
 };
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 
 mod slicesubsequence;
 use slicesubsequence::*;
@@ -145,44 +146,24 @@ impl Config {
 
     #[cfg(feature = "outgoing")]
     fn get_outgoing_cfg(&self) -> OutgoingConfig {
-        let c2s_config = ClientConfig::builder().with_safe_defaults().with_root_certificates(root_cert_store()).with_no_client_auth();
-        let s2s_config = match self.certs_key().and_then(|(tls_certs, tls_key)| {
-            Ok(ClientConfig::builder()
-                .with_safe_defaults()
-                .with_root_certificates(root_cert_store())
-                .with_single_cert(tls_certs, tls_key)?)
-        }) {
-            Ok(s) => s,
+        let certs_key = match self.certs_key() {
+            Ok((tls_certs, tls_key)) => {
+                ClientConfig::builder()
+                    .with_safe_defaults()
+                    .with_root_certificates(root_cert_store())
+                    .with_single_cert(tls_certs.clone(), tls_key.clone())
+                    .die("invalid key for certs");
+                Some((tls_certs, tls_key))
+            }
             Err(e) => {
                 debug!("invalid key/cert for s2s client auth: {}", e);
-                c2s_config.clone()
+                None
             }
         };
-        // uncomment to disable cert auth/sasl external
-        //let s2s_config = c2s_config.clone();
-
-        let mut c2s_config_alpn = c2s_config.clone();
-        let mut s2s_config_alpn = s2s_config.clone();
-        c2s_config_alpn.alpn_protocols.push(ALPN_XMPP_CLIENT.to_vec());
-        s2s_config_alpn.alpn_protocols.push(ALPN_XMPP_SERVER.to_vec());
-
-        let c2s_config_alpn = Arc::new(c2s_config_alpn);
-        let s2s_config_alpn = Arc::new(s2s_config_alpn);
-
-        let c2s_connector_alpn: TlsConnector = c2s_config_alpn.clone().into();
-        let s2s_connector_alpn: TlsConnector = s2s_config_alpn.clone().into();
-
-        let c2s_connector: TlsConnector = Arc::new(c2s_config).into();
-        let s2s_connector: TlsConnector = Arc::new(s2s_config).into();
 
         OutgoingConfig {
             max_stanza_size_bytes: self.max_stanza_size_bytes,
-            c2s_config_alpn,
-            s2s_config_alpn,
-            c2s_connector_alpn,
-            s2s_connector_alpn,
-            c2s_connector,
-            s2s_connector,
+            certs_key,
         }
     }
 
@@ -209,7 +190,7 @@ impl Config {
 
         let mut config = ServerConfig::builder()
             .with_safe_defaults()
-            .with_client_cert_verifier(Arc::new(AllowAnyAnonymousOrAuthenticatedServer))
+            .with_client_cert_verifier(Arc::new(AllowAnonymousOrAnyCert))
             .with_single_cert(tls_certs, tls_key)?;
         // todo: will connecting without alpn work then?
         config.alpn_protocols.push(ALPN_XMPP_CLIENT.to_vec());
@@ -228,41 +209,51 @@ impl Config {
 #[cfg(feature = "outgoing")]
 pub struct OutgoingConfig {
     max_stanza_size_bytes: usize,
-
-    c2s_config_alpn: Arc<ClientConfig>,
-    s2s_config_alpn: Arc<ClientConfig>,
-    c2s_connector_alpn: TlsConnector,
-    s2s_connector_alpn: TlsConnector,
-
-    c2s_connector: TlsConnector,
-    s2s_connector: TlsConnector,
+    certs_key: Option<(Vec<Certificate>, PrivateKey)>,
 }
 
 #[cfg(feature = "outgoing")]
 impl OutgoingConfig {
-    pub fn client_cfg_alpn(&self, is_c2s: bool) -> Arc<ClientConfig> {
-        if is_c2s {
-            self.c2s_config_alpn.clone()
-        } else {
-            self.s2s_config_alpn.clone()
-        }
-    }
+    pub fn with_custom_certificate_verifier(&self, is_c2s: bool, cert_verifier: XmppServerCertVerifier) -> OutgoingVerifierConfig {
+        let config = match (is_c2s, self.certs_key.as_ref()) {
+            (false, Some((tls_certs, tls_key))) => ClientConfig::builder()
+                .with_safe_defaults()
+                .with_custom_certificate_verifier(Arc::new(cert_verifier))
+                .with_single_cert(tls_certs.to_vec(), tls_key.to_owned())
+                .expect("cannot panic because key was checked for validity in OutgoingConfig constructor"),
+            _ => ClientConfig::builder()
+                .with_safe_defaults()
+                .with_custom_certificate_verifier(Arc::new(cert_verifier))
+                .with_no_client_auth(),
+        };
 
-    pub fn connector_alpn(&self, is_c2s: bool) -> TlsConnector {
-        if is_c2s {
-            self.c2s_connector_alpn.clone()
-        } else {
-            self.s2s_connector_alpn.clone()
-        }
-    }
+        let mut config_alpn = config.clone();
+        config_alpn.alpn_protocols.push(if is_c2s { ALPN_XMPP_CLIENT } else { ALPN_XMPP_SERVER }.to_vec());
 
-    pub fn connector(&self, is_c2s: bool) -> TlsConnector {
-        if is_c2s {
-            self.c2s_connector.clone()
-        } else {
-            self.s2s_connector.clone()
+        let config_alpn = Arc::new(config_alpn);
+
+        let connector_alpn: TlsConnector = config_alpn.clone().into();
+
+        let connector: TlsConnector = Arc::new(config).into();
+
+        OutgoingVerifierConfig {
+            max_stanza_size_bytes: self.max_stanza_size_bytes,
+            config_alpn,
+            connector_alpn,
+            connector,
         }
     }
+}
+
+#[derive(Clone)]
+#[cfg(feature = "outgoing")]
+pub struct OutgoingVerifierConfig {
+    pub max_stanza_size_bytes: usize,
+
+    pub config_alpn: Arc<ClientConfig>,
+    pub connector_alpn: TlsConnector,
+
+    pub connector: TlsConnector,
 }
 
 async fn shuffle_rd_wr(in_rd: StanzaRead, in_wr: StanzaWrite, config: CloneableConfig, server_certs: ServerCerts, local_addr: SocketAddr, client_addr: &mut Context<'_>) -> Result<()> {
@@ -293,14 +284,14 @@ async fn shuffle_rd_wr_filter(
 
     if !is_c2s {
         // for s2s we need this
-        let dns_from = stream_open
+        let domain = stream_open
             .extract_between(b" from='", b"'")
             .or_else(|_| stream_open.extract_between(b" from=\"", b"\""))
-            .and_then(|b| Ok(DnsNameRef::try_from_ascii(b)?))?;
-        if !server_certs.valid(dns_from) {
-            // todo: send stream error saying cert is invalid
-            bail!("server certificate invalid for {:?}", dns_from);
-        }
+            .and_then(|b| Ok(std::str::from_utf8(b)?))?;
+        let (_, cert_verifier) = get_xmpp_connections(domain, is_c2s).await?;
+        let certs = server_certs.peer_certificates().ok_or_else(|| anyhow!("no client cert auth for s2s incoming from {}", domain))?;
+        // todo: send stream error saying cert is invalid
+        cert_verifier.verify_cert(&certs[0], &certs[1..], SystemTime::now())?;
     }
     drop(server_certs);
 

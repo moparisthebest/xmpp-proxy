@@ -3,11 +3,15 @@
 use std::convert::TryFrom;
 use std::net::SocketAddr;
 
+use data_encoding::BASE64;
+use ring::digest::{Algorithm, Context as DigestContext, SHA256, SHA512};
+
 use trust_dns_resolver::error::ResolveError;
 use trust_dns_resolver::lookup::{SrvLookup, TxtLookup};
 use trust_dns_resolver::{IntoName, TokioAsyncResolver};
 
 use anyhow::{bail, Result};
+use tokio_rustls::webpki::DnsName;
 #[cfg(feature = "websocket")]
 use tokio_tungstenite::tungstenite::http::Uri;
 
@@ -47,11 +51,10 @@ impl XmppConnection {
     pub async fn connect(
         &self,
         domain: &str,
-        is_c2s: bool,
         stream_open: &[u8],
         in_filter: &mut crate::StanzaFilter,
         client_addr: &mut Context<'_>,
-        config: OutgoingConfig,
+        config: OutgoingVerifierConfig,
     ) -> Result<(StanzaWrite, StanzaRead, SocketAddr, &'static str)> {
         debug!("{} attempting connection to SRV: {:?}", client_addr.log_from(), self);
         // todo: need to set options to Ipv4AndIpv6
@@ -61,23 +64,23 @@ impl XmppConnection {
             debug!("{} trying ip {}", client_addr.log_from(), to_addr);
             // todo: for DNSSEC we need to optionally allow target in addition to domain, but what for SNI
             match self.conn_type {
-                XmppConnectionType::StartTLS => match crate::starttls_connect(to_addr, domain, is_c2s, stream_open, in_filter, config.clone()).await {
+                XmppConnectionType::StartTLS => match crate::starttls_connect(to_addr, domain, stream_open, in_filter, config.clone()).await {
                     Ok((wr, rd)) => return Ok((wr, rd, to_addr, "starttls-out")),
                     Err(e) => error!("starttls connection failed to IP {} from SRV {}, error: {}", to_addr, self.target, e),
                 },
-                XmppConnectionType::DirectTLS => match crate::tls_connect(to_addr, domain, is_c2s, config.clone()).await {
+                XmppConnectionType::DirectTLS => match crate::tls_connect(to_addr, domain, config.clone()).await {
                     Ok((wr, rd)) => return Ok((wr, rd, to_addr, "directtls-out")),
                     Err(e) => error!("direct tls connection failed to IP {} from SRV {}, error: {}", to_addr, self.target, e),
                 },
                 #[cfg(feature = "quic")]
-                XmppConnectionType::QUIC => match crate::quic_connect(to_addr, domain, is_c2s, config.clone()).await {
+                XmppConnectionType::QUIC => match crate::quic_connect(to_addr, domain, config.clone()).await {
                     Ok((wr, rd)) => return Ok((wr, rd, to_addr, "quic-out")),
                     Err(e) => error!("quic connection failed to IP {} from SRV {}, error: {}", to_addr, self.target, e),
                 },
                 #[cfg(feature = "websocket")]
                 // todo: when websocket is found via DNS, we need to validate cert against domain, *not* target, this is a security problem with XEP-0156, we are doing it the secure but likely unexpected way here for now
                 XmppConnectionType::WebSocket(ref url, ref origin, ref secure) => {
-                    match crate::websocket_connect(to_addr, if *secure { &self.target } else { domain }, url, origin, is_c2s, config.clone()).await {
+                    match crate::websocket_connect(to_addr, if *secure { &self.target } else { domain }, url, origin, config.clone()).await {
                         Ok((wr, rd)) => return Ok((wr, rd, to_addr, "websocket-out")),
                         Err(e) => error!("websocket connection failed to IP {} from TXT {}, error: {}", to_addr, url, e),
                     }
@@ -163,7 +166,8 @@ fn collect_txts(ret: &mut Vec<XmppConnection>, secure_urls: Vec<String>, txt_rec
     }
 }
 
-pub async fn get_xmpp_connections(domain: &str, is_c2s: bool) -> Result<Vec<XmppConnection>> {
+pub async fn get_xmpp_connections(domain: &str, is_c2s: bool) -> Result<(Vec<XmppConnection>, XmppServerCertVerifier)> {
+    let mut valid_tls_cert_server_names: Vec<DnsName> = vec![DnsNameRef::try_from_ascii_str(domain)?.to_owned()];
     let (starttls, direct_tls, quic, websocket_txt, websocket_rel) = if is_c2s {
         ("_xmpp-client._tcp", "_xmpps-client._tcp", "_xmppq-client._udp", "_xmppconnect", "urn:xmpp:alt-connections:websocket")
     } else {
@@ -192,8 +196,8 @@ pub async fn get_xmpp_connections(domain: &str, is_c2s: bool) -> Result<Vec<Xmpp
         quic,
         //#[cfg(feature = "websocket")]
         websocket_txt,
-        websocket_host_meta,
-        websocket_host_meta_json,
+        websocket_host,
+        posh,
     ) = tokio::join!(
         RESOLVER.srv_lookup(starttls),
         RESOLVER.srv_lookup(direct_tls),
@@ -202,7 +206,7 @@ pub async fn get_xmpp_connections(domain: &str, is_c2s: bool) -> Result<Vec<Xmpp
         //#[cfg(feature = "websocket")]
         RESOLVER.txt_lookup(websocket_txt),
         collect_host_meta(domain, websocket_rel),
-        collect_host_meta_json(domain, websocket_rel),
+        collect_posh(domain),
     );
 
     let mut ret = Vec::new();
@@ -212,17 +216,7 @@ pub async fn get_xmpp_connections(domain: &str, is_c2s: bool) -> Result<Vec<Xmpp
     collect_srvs(&mut ret, quic, XmppConnectionType::QUIC);
     #[cfg(feature = "websocket")]
     {
-        let mut urls = Vec::new();
-        match websocket_host_meta {
-            Ok(mut u) => urls.append(&mut u),
-            Err(e) => debug!("websocket_host_meta error for domain {}: {}", domain, e),
-        }
-        match websocket_host_meta_json {
-            Ok(mut u) => urls.append(&mut u),
-            Err(e) => debug!("websocket_host_meta_json error for domain {}: {}", domain, e),
-        }
-        urls.sort();
-        urls.dedup();
+        let urls = websocket_host.unwrap_or_default();
         for url in &urls {
             if let Some(url) = wss_to_srv(url, true) {
                 ret.push(url);
@@ -232,6 +226,25 @@ pub async fn get_xmpp_connections(domain: &str, is_c2s: bool) -> Result<Vec<Xmpp
     }
     ret.sort_by(|a, b| a.priority.cmp(&b.priority));
     // todo: do something with weight
+
+    #[allow(clippy::single_match)]
+    for srv in &ret {
+        match srv.conn_type {
+            #[cfg(feature = "websocket")]
+            XmppConnectionType::WebSocket(_, _, ref secure) => {
+                if *secure {
+                    if let Ok(target) = DnsNameRef::try_from_ascii_str(srv.target.as_str()) {
+                        let target = target.to_owned();
+                        if !valid_tls_cert_server_names.contains(&target) {
+                            valid_tls_cert_server_names.push(target);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let cert_verifier = XmppServerCertVerifier::new(valid_tls_cert_server_names, posh.ok());
 
     if ret.is_empty() {
         // default starttls ports
@@ -274,7 +287,7 @@ pub async fn get_xmpp_connections(domain: &str, is_c2s: bool) -> Result<Vec<Xmpp
 
     debug!("{} records for {}: {:?}", ret.len(), domain, ret);
 
-    Ok(ret)
+    Ok((ret, cert_verifier))
 }
 
 pub async fn srv_connect(
@@ -285,8 +298,10 @@ pub async fn srv_connect(
     client_addr: &mut Context<'_>,
     config: OutgoingConfig,
 ) -> Result<(StanzaWrite, StanzaRead, Vec<u8>)> {
-    for srv in get_xmpp_connections(domain, is_c2s).await? {
-        let connect = srv.connect(domain, is_c2s, stream_open, in_filter, client_addr, config.clone()).await;
+    let (srvs, cert_verifier) = get_xmpp_connections(domain, is_c2s).await?;
+    let config = config.with_custom_certificate_verifier(is_c2s, cert_verifier);
+    for srv in srvs {
+        let connect = srv.connect(domain, stream_open, in_filter, client_addr, config.clone()).await;
         if connect.is_err() {
             continue;
         }
@@ -313,13 +328,20 @@ pub async fn srv_connect(
 }
 
 #[cfg(not(feature = "websocket"))]
-async fn collect_host_meta_json(domain: &str, rel: &str) -> Result<Vec<String>> {
+async fn collect_host_meta(domain: &str, rel: &str) -> Result<Vec<String>> {
     bail!("websocket disabled")
 }
 
-#[cfg(not(feature = "websocket"))]
+#[cfg(feature = "websocket")]
 async fn collect_host_meta(domain: &str, rel: &str) -> Result<Vec<String>> {
-    bail!("websocket disabled")
+    match tokio::join!(collect_host_meta_xml(domain, rel), collect_host_meta_json(domain, rel)) {
+        (Ok(mut xml), Ok(json)) => {
+            combine_uniq(&mut xml, json);
+            Ok(xml)
+        }
+        (_, Ok(json)) => Ok(json),
+        (xml, _) => xml,
+    }
 }
 
 #[cfg(feature = "websocket")]
@@ -335,7 +357,7 @@ async fn collect_host_meta_json(domain: &str, rel: &str) -> Result<Vec<String>> 
     }
 
     let url = format!("https://{}/.well-known/host-meta.json", domain);
-    let resp = reqwest::get(&url).await?;
+    let resp = https_get(&url).await?;
     if resp.status().is_success() {
         let resp = resp.json::<HostMeta>().await?;
         // we will only support wss:// (TLS) not ws:// (plain text)
@@ -346,7 +368,7 @@ async fn collect_host_meta_json(domain: &str, rel: &str) -> Result<Vec<String>> 
 }
 
 #[cfg(feature = "websocket")]
-async fn parse_host_meta(rel: &str, bytes: &[u8]) -> Result<Vec<String>> {
+async fn parse_host_meta_xml(rel: &str, bytes: &[u8]) -> Result<Vec<String>> {
     let mut vec = Vec::new();
     let mut stanza_reader = StanzaReader(bytes);
     let mut filter = StanzaFilter::new(8192);
@@ -374,25 +396,212 @@ async fn parse_host_meta(rel: &str, bytes: &[u8]) -> Result<Vec<String>> {
 }
 
 #[cfg(feature = "websocket")]
-async fn collect_host_meta(domain: &str, rel: &str) -> Result<Vec<String>> {
+async fn collect_host_meta_xml(domain: &str, rel: &str) -> Result<Vec<String>> {
     let url = format!("https://{}/.well-known/host-meta", domain);
-    let resp = reqwest::get(&url).await?;
+    let resp = https_get(&url).await?;
     if resp.status().is_success() {
-        parse_host_meta(rel, resp.bytes().await?.as_ref()).await
+        parse_host_meta_xml(rel, resp.bytes().await?.as_ref()).await
     } else {
         bail!("failed with status code {} for url {}", resp.status(), url)
     }
+}
+
+pub async fn https_get<T: reqwest::IntoUrl>(url: T) -> reqwest::Result<reqwest::Response> {
+    // todo: resolve URL with our resolver
+    reqwest::Client::builder().https_only(true).build()?.get(url).send().await
+}
+
+// https://datatracker.ietf.org/doc/html/rfc7711
+// https://www.iana.org/assignments/posh-service-names/posh-service-names.xhtml
+async fn collect_posh(domain: &str) -> Result<Posh> {
+    match tokio::join!(collect_posh_service(domain, "xmpp-client"), collect_posh_service(domain, "xmpp-server")) {
+        (Ok(client), Ok(server)) => Ok(client.append(server)),
+        (_, Ok(server)) => Ok(server),
+        (client, _) => client,
+    }
+}
+
+async fn collect_posh_service(domain: &str, service_name: &str) -> Result<Posh> {
+    let url = format!("https://{}/.well-known/posh/{}.json", domain, service_name);
+    let resp = https_get(&url).await?;
+    if resp.status().is_success() {
+        match resp.json::<PoshJson>().await? {
+            PoshJson::PoshFingerprints { fingerprints, expires } => Posh::new(fingerprints, expires),
+            PoshJson::PoshRedirect { url, expires } => {
+                let resp = https_get(&url).await?;
+                match resp.json::<PoshJson>().await? {
+                    PoshJson::PoshRedirect { .. } => bail!("posh illegal url redirect to another url"),
+                    PoshJson::PoshFingerprints { fingerprints, expires: expires2 } => Posh::new(
+                        fingerprints,
+                        // expires is supposed to be the least of these two
+                        min(expires, expires2),
+                    ),
+                }
+            }
+        }
+    } else {
+        bail!("failed with status code {} for url {}", resp.status(), url)
+    }
+}
+
+fn combine_uniq(target: &mut Vec<String>, mut other: Vec<String>) {
+    target.append(&mut other);
+    target.sort();
+    target.dedup();
+}
+
+fn min(a: u64, b: u64) -> u64 {
+    if a < b {
+        a
+    } else {
+        b
+    }
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(untagged)]
+enum PoshJson {
+    PoshFingerprints { fingerprints: Vec<Fingerprint>, expires: u64 },
+    PoshRedirect { url: String, expires: u64 },
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "kebab-case")]
+struct Fingerprint {
+    // todo: support more algorithms or no?
+    sha_256: Option<String>,
+    sha_512: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct Posh {
+    sha_256_fingerprints: Vec<String>,
+    sha_512_fingerprints: Vec<String>,
+    expires: u64,
+}
+
+impl Posh {
+    fn new(fingerprints: Vec<Fingerprint>, expires: u64) -> Result<Self> {
+        if expires == 0 {
+            bail!("posh expires is 0, ignoring");
+        }
+        let mut sha_256_fingerprints = Vec::with_capacity(fingerprints.len());
+        let mut sha_512_fingerprints = Vec::with_capacity(fingerprints.len());
+        for f in fingerprints {
+            if let Some(h) = f.sha_256 {
+                sha_256_fingerprints.push(h);
+            }
+            if let Some(h) = f.sha_512 {
+                sha_512_fingerprints.push(h);
+            }
+        }
+        Ok(Posh {
+            sha_256_fingerprints,
+            sha_512_fingerprints,
+            expires,
+        })
+    }
+
+    fn append(mut self, other: Self) -> Self {
+        combine_uniq(&mut self.sha_256_fingerprints, other.sha_256_fingerprints);
+        combine_uniq(&mut self.sha_512_fingerprints, other.sha_512_fingerprints);
+        self.expires = min(self.expires, other.expires);
+        self
+    }
+
+    pub fn valid_cert(&self, cert: &[u8]) -> bool {
+        (!self.sha_256_fingerprints.is_empty() && self.sha_256_fingerprints.contains(&digest(&SHA256, cert)))
+            || (!self.sha_512_fingerprints.is_empty() && self.sha_512_fingerprints.contains(&digest(&SHA512, cert)))
+    }
+}
+
+fn digest(algorithm: &'static Algorithm, buf: &[u8]) -> String {
+    let mut context = DigestContext::new(algorithm);
+    context.update(buf);
+    let digest = context.finish();
+    BASE64.encode(digest.as_ref())
 }
 
 #[cfg(test)]
 mod tests {
     use crate::srv::*;
 
+    fn valid_posh(posh: &[u8], cert: &[u8]) -> bool {
+        let posh: PoshJson = serde_json::from_slice(&posh[..]).unwrap();
+        let cert = BASE64.decode(cert).unwrap();
+        println!("posh: {:?}", posh);
+        if let PoshJson::PoshFingerprints { fingerprints, expires } = posh {
+            let posh = Posh::new(fingerprints, expires).unwrap();
+            println!("posh: {:?}", posh);
+            posh.valid_cert(&cert)
+        } else {
+            false
+        }
+    }
+
+    #[test]
+    fn posh_deserialize() {
+        assert!(valid_posh(
+            br###"{"expires":86400,"fingerprints":[{"sha-256":"6sKZUeE0LBwbCXqeoHJsGCjpFLNrL9QF2W6NhDYnV4I="}]}"###,
+            br###"MIICHDCCAaGgAwIBAgIUQCykdom3fbgtYxbVzk12uY13FqUwCgYIKoZIzj0EAwIwGjEYMBYGA1UEAwwPcG9zaC5iYWR4bXBwLmV1MB4XDTIxMTAxNTE0NDkzMloXDTIyMTAxNTE0NDkzMlowGjEYMBYGA1UEAwwPcG9zaC5iYWR4bXBwLmV1MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEUeyvxJeBihodBTIATT5szGfsgeNE1nNIEjOU+PSDBpfCFEAKw5oIxB35TGyPvOe1MBSBXcaRFXBSKBZ4AkVRPsKsGjEmUa9GpIbEwcsUvw+NTx8OT81tuTEbpjs0QGy0o4GnMIGkMAwGA1UdEwQFMAMBAf8wgZMGA1UdEQSBizCBiKAqBggrBgEFBQcIB6AeFhxfeG1wcC1jbGllbnQucG9zaC5iYWR4bXBwLmV1oCoGCCsGAQUFBwgHoB4WHF94bXBwLXNlcnZlci5wb3NoLmJhZHhtcHAuZXWgHQYIKwYBBQUHCAWgEQwPcG9zaC5iYWR4bXBwLmV1gg9wb3NoLmJhZHhtcHAuZXUwCgYIKoZIzj0EAwIDaQAwZgIxAKLvjCkY9OV9dX7emghbroYgbqqWWBaQuIHLqtOEKpS+R88fOfEJbokViKNinY3ugwIxAPJ/oiK8ekF0gfa4aWmoCscbNv2Ns7HD+iSLm4GcSc/tza9r+uXVsV+0uqJ3UleTFA=="###
+        ));
+        assert!(valid_posh(
+            br###"{"expires":86400,"fingerprints":[{"sha-512":"7S7zdev/QvRxHYguWHhD5Thlolj+H4aHo9Qy3Y1R6p7WGKnNBNPxk+tnHRSIs5CJIHIR3M7a6wNkgAC5uLWL/g=="}]}"###,
+            br###"MIICHDCCAaGgAwIBAgIUQCykdom3fbgtYxbVzk12uY13FqUwCgYIKoZIzj0EAwIwGjEYMBYGA1UEAwwPcG9zaC5iYWR4bXBwLmV1MB4XDTIxMTAxNTE0NDkzMloXDTIyMTAxNTE0NDkzMlowGjEYMBYGA1UEAwwPcG9zaC5iYWR4bXBwLmV1MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEUeyvxJeBihodBTIATT5szGfsgeNE1nNIEjOU+PSDBpfCFEAKw5oIxB35TGyPvOe1MBSBXcaRFXBSKBZ4AkVRPsKsGjEmUa9GpIbEwcsUvw+NTx8OT81tuTEbpjs0QGy0o4GnMIGkMAwGA1UdEwQFMAMBAf8wgZMGA1UdEQSBizCBiKAqBggrBgEFBQcIB6AeFhxfeG1wcC1jbGllbnQucG9zaC5iYWR4bXBwLmV1oCoGCCsGAQUFBwgHoB4WHF94bXBwLXNlcnZlci5wb3NoLmJhZHhtcHAuZXWgHQYIKwYBBQUHCAWgEQwPcG9zaC5iYWR4bXBwLmV1gg9wb3NoLmJhZHhtcHAuZXUwCgYIKoZIzj0EAwIDaQAwZgIxAKLvjCkY9OV9dX7emghbroYgbqqWWBaQuIHLqtOEKpS+R88fOfEJbokViKNinY3ugwIxAPJ/oiK8ekF0gfa4aWmoCscbNv2Ns7HD+iSLm4GcSc/tza9r+uXVsV+0uqJ3UleTFA=="###
+        ));
+        assert!(!valid_posh(
+            br###"{"expires":86400,"fingerprints":[{"sha-256":"Dp8REwxYw0vFt2tRAGIAT4nNtXD2wwqL0eF5QdN4Zm4="}]}"###,
+            br###"MIICHDCCAaGgAwIBAgIUQCykdom3fbgtYxbVzk12uY13FqUwCgYIKoZIzj0EAwIwGjEYMBYGA1UEAwwPcG9zaC5iYWR4bXBwLmV1MB4XDTIxMTAxNTE0NDkzMloXDTIyMTAxNTE0NDkzMlowGjEYMBYGA1UEAwwPcG9zaC5iYWR4bXBwLmV1MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEUeyvxJeBihodBTIATT5szGfsgeNE1nNIEjOU+PSDBpfCFEAKw5oIxB35TGyPvOe1MBSBXcaRFXBSKBZ4AkVRPsKsGjEmUa9GpIbEwcsUvw+NTx8OT81tuTEbpjs0QGy0o4GnMIGkMAwGA1UdEwQFMAMBAf8wgZMGA1UdEQSBizCBiKAqBggrBgEFBQcIB6AeFhxfeG1wcC1jbGllbnQucG9zaC5iYWR4bXBwLmV1oCoGCCsGAQUFBwgHoB4WHF94bXBwLXNlcnZlci5wb3NoLmJhZHhtcHAuZXWgHQYIKwYBBQUHCAWgEQwPcG9zaC5iYWR4bXBwLmV1gg9wb3NoLmJhZHhtcHAuZXUwCgYIKoZIzj0EAwIDaQAwZgIxAKLvjCkY9OV9dX7emghbroYgbqqWWBaQuIHLqtOEKpS+R88fOfEJbokViKNinY3ugwIxAPJ/oiK8ekF0gfa4aWmoCscbNv2Ns7HD+iSLm4GcSc/tza9r+uXVsV+0uqJ3UleTFA=="###
+        ));
+        assert!(!valid_posh(
+            br###"{"expires":86400,"fingerprints":[{"sha-512":"GwfqWa8hIYCGt9V9EgdDHg6npGeGhpAwryUJkU1FuP6CNiF2Auv1s1Tp9gSWSlCTbClSmzz+sorNVOfaDW6m3Q=="}]}"###,
+            br###"MIICHDCCAaGgAwIBAgIUQCykdom3fbgtYxbVzk12uY13FqUwCgYIKoZIzj0EAwIwGjEYMBYGA1UEAwwPcG9zaC5iYWR4bXBwLmV1MB4XDTIxMTAxNTE0NDkzMloXDTIyMTAxNTE0NDkzMlowGjEYMBYGA1UEAwwPcG9zaC5iYWR4bXBwLmV1MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEUeyvxJeBihodBTIATT5szGfsgeNE1nNIEjOU+PSDBpfCFEAKw5oIxB35TGyPvOe1MBSBXcaRFXBSKBZ4AkVRPsKsGjEmUa9GpIbEwcsUvw+NTx8OT81tuTEbpjs0QGy0o4GnMIGkMAwGA1UdEwQFMAMBAf8wgZMGA1UdEQSBizCBiKAqBggrBgEFBQcIB6AeFhxfeG1wcC1jbGllbnQucG9zaC5iYWR4bXBwLmV1oCoGCCsGAQUFBwgHoB4WHF94bXBwLXNlcnZlci5wb3NoLmJhZHhtcHAuZXWgHQYIKwYBBQUHCAWgEQwPcG9zaC5iYWR4bXBwLmV1gg9wb3NoLmJhZHhtcHAuZXUwCgYIKoZIzj0EAwIDaQAwZgIxAKLvjCkY9OV9dX7emghbroYgbqqWWBaQuIHLqtOEKpS+R88fOfEJbokViKNinY3ugwIxAPJ/oiK8ekF0gfa4aWmoCscbNv2Ns7HD+iSLm4GcSc/tza9r+uXVsV+0uqJ3UleTFA=="###
+        ));
+
+        let posh = br###"
+        {
+         "fingerprints": [
+           {
+             "sha-256": "4/mggdlVx8A3pvHAWW5sD+qJyMtUHgiRuPjVC48N0XQ=",
+             "sha-512": "25N+1hB2Vo42l9lSGqw+n3BKFhDHsyork8ou+D9B43TXeJ1J81mdQEDqm39oR/EHkPBDDG1y5+AG94Kec0xVqA==",
+             "bla": "woo"             
+           }
+         ],
+         "expires": 604800
+        }
+        "###;
+        let posh: PoshJson = serde_json::from_slice(&posh[..]).unwrap();
+        println!("posh: {:?}", posh);
+        if let PoshJson::PoshFingerprints { fingerprints, expires } = posh {
+            let posh = Posh::new(fingerprints, expires);
+            println!("posh: {:?}", posh);
+        }
+
+        let posh = br###"
+        {
+         "url":"https://hosting.example.net/.well-known/posh/spice.json",
+         "expires": 604800
+        }
+        "###;
+        let posh: PoshJson = serde_json::from_slice(&posh[..]).unwrap();
+        println!("posh: {:?}", posh);
+    }
+
+    //#[tokio::test]
+    async fn posh() -> Result<()> {
+        let domain = "posh.badxmpp.eu";
+        let posh = collect_posh(domain).await.unwrap();
+        println!("posh for domain {}: {:?}", domain, posh);
+        Ok(())
+    }
+
     //#[tokio::test]
     async fn srv() -> Result<()> {
         let domain = "burtrum.org";
         let is_c2s = true;
-        for srv in get_xmpp_connections(domain, is_c2s).await? {
+        let (srvs, cert_verifier) = get_xmpp_connections(domain, is_c2s).await?;
+        println!("cert_verifier: {:?}", cert_verifier);
+        for srv in srvs {
             println!("trying 1 domain {}, SRV: {:?}", domain, srv);
             let ips = RESOLVER.lookup_ip(srv.target.clone()).await?;
             for ip in ips.iter() {
@@ -407,7 +616,7 @@ mod tests {
     async fn http() -> Result<()> {
         let hosts = collect_host_meta_json("burtrum.org", "urn:xmpp:alt-connections:websocket").await?;
         println!("{:?}", hosts);
-        let hosts = collect_host_meta("burtrum.org", "urn:xmpp:alt-connections:websocket").await?;
+        let hosts = collect_host_meta_xml("burtrum.org", "urn:xmpp:alt-connections:websocket").await?;
         println!("{:?}", hosts);
         Ok(())
     }
@@ -416,22 +625,22 @@ mod tests {
     #[tokio::test]
     async fn test_parse_host_meta() -> Result<()> {
         let xrd = br#"<XRD xmlns='http://docs.oasis-open.org/ns/xri/xrd-1.0'><Link rel='urn:xmpp:alt-connections:xbosh' href='https://burtrum.org/http-bind'/><Link rel='urn:xmpp:alt-connections:websocket' href='wss://burtrum.org/xmpp-websocket'/></XRD>"#;
-        assert_eq!(parse_host_meta("urn:xmpp:alt-connections:websocket", xrd).await?, vec!["wss://burtrum.org/xmpp-websocket"]);
+        assert_eq!(parse_host_meta_xml("urn:xmpp:alt-connections:websocket", xrd).await?, vec!["wss://burtrum.org/xmpp-websocket"]);
 
         let xrd = br#"<XRD xmlns="http://docs.oasis-open.org/ns/xri/xrd-1.0"><Link rel="urn:xmpp:alt-connections:xbosh" href="https://burtrum.org/http-bind"/><Link rel="urn:xmpp:alt-connections:websocket" href="wss://burtrum.org/xmpp-websocket"/></XRD>"#;
-        assert_eq!(parse_host_meta("urn:xmpp:alt-connections:websocket", xrd).await?, vec!["wss://burtrum.org/xmpp-websocket"]);
+        assert_eq!(parse_host_meta_xml("urn:xmpp:alt-connections:websocket", xrd).await?, vec!["wss://burtrum.org/xmpp-websocket"]);
 
         let xrd = br#"<xrd xmlns='http://docs.oasis-open.org/ns/xri/xrd-1.0'><link rel='urn:xmpp:alt-connections:xbosh' href='https://burtrum.org/http-bind'/><link rel='urn:xmpp:alt-connections:websocket' href='wss://burtrum.org/xmpp-websocket'/></xrd>"#;
-        assert_eq!(parse_host_meta("urn:xmpp:alt-connections:websocket", xrd).await?, vec!["wss://burtrum.org/xmpp-websocket"]);
+        assert_eq!(parse_host_meta_xml("urn:xmpp:alt-connections:websocket", xrd).await?, vec!["wss://burtrum.org/xmpp-websocket"]);
 
         let xrd = br#"<xrd xmlns="http://docs.oasis-open.org/ns/xri/xrd-1.0"><link rel="urn:xmpp:alt-connections:xbosh" href="https://burtrum.org/http-bind"/><link rel="urn:xmpp:alt-connections:websocket" href="wss://burtrum.org/xmpp-websocket"/></xrd>"#;
-        assert_eq!(parse_host_meta("urn:xmpp:alt-connections:websocket", xrd).await?, vec!["wss://burtrum.org/xmpp-websocket"]);
+        assert_eq!(parse_host_meta_xml("urn:xmpp:alt-connections:websocket", xrd).await?, vec!["wss://burtrum.org/xmpp-websocket"]);
 
         let xrd = br#"<xrd xmlns="http://docs.oasis-open.org/ns/xri/xrd-1.0"><link rel="urn:xmpp:alt-connections:xbosh" href="https://burtrum.org/http-bind"/><link rel="urn:xmpp:alt-connections:websocket" href="wss://burtrum.org/xmpp-websocket"/><link rel="urn:xmpp:alt-connections:s2s-websocket" href="wss://burtrum.org/xmpp-websocket-s2s"/></xrd>"#;
-        assert_eq!(parse_host_meta("urn:xmpp:alt-connections:s2s-websocket", xrd).await?, vec!["wss://burtrum.org/xmpp-websocket-s2s"]);
+        assert_eq!(parse_host_meta_xml("urn:xmpp:alt-connections:s2s-websocket", xrd).await?, vec!["wss://burtrum.org/xmpp-websocket-s2s"]);
 
         let xrd = br#"<xrd xmlns="http://docs.oasis-open.org/ns/xri/xrd-1.0"><link rel="urn:xmpp:alt-connections:xbosh" href="https://burtrum.org/http-bind"/><link rel="urn:xmpp:alt-connections:websocket" href="wss://burtrum.org/xmpp-websocket"/><link rel="urn:xmpp:alt-connections:s2s-websocket" href="wss://burtrum.org/xmpp-websocket-s2s"/></xrd>"#;
-        assert_eq!(parse_host_meta("urn:xmpp:alt-connections:websocket", xrd).await?, vec!["wss://burtrum.org/xmpp-websocket"]);
+        assert_eq!(parse_host_meta_xml("urn:xmpp:alt-connections:websocket", xrd).await?, vec!["wss://burtrum.org/xmpp-websocket"]);
 
         Ok(())
     }

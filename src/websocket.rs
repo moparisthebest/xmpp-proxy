@@ -104,14 +104,14 @@ use tokio_tungstenite::tungstenite::http::header::{ORIGIN, SEC_WEBSOCKET_PROTOCO
 use tokio_tungstenite::tungstenite::http::Uri;
 
 #[cfg(feature = "outgoing")]
-pub async fn websocket_connect(target: SocketAddr, server_name: &str, url: &Uri, origin: &str, is_c2s: bool, config: OutgoingConfig) -> Result<(StanzaWrite, StanzaRead)> {
+pub async fn websocket_connect(target: SocketAddr, server_name: &str, url: &Uri, origin: &str, config: OutgoingVerifierConfig) -> Result<(StanzaWrite, StanzaRead)> {
     let mut request = url.into_client_request()?;
     request.headers_mut().append(SEC_WEBSOCKET_PROTOCOL, "xmpp".parse()?);
     request.headers_mut().append(ORIGIN, origin.parse()?);
 
     let dnsname = ServerName::try_from(server_name)?;
     let stream = tokio::net::TcpStream::connect(target).await?;
-    let stream = config.connector(is_c2s).connect(dnsname, stream).await?;
+    let stream = config.connector.connect(dnsname, stream).await?;
 
     let stream: tokio_rustls::TlsStream<tokio::net::TcpStream> = stream.into();
     // todo: tokio_tungstenite seems to have a bug, if the write buffer is non-zero, it'll hang forever, even though we always flush, investigate
