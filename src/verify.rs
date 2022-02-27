@@ -1,8 +1,12 @@
+use crate::Posh;
+use log::debug;
+use rustls::client::{ServerCertVerified, ServerCertVerifier};
 use rustls::server::{ClientCertVerified, ClientCertVerifier};
-use rustls::{Certificate, DistinguishedNames, Error};
+use rustls::{Certificate, DistinguishedNames, Error, ServerName};
 use std::convert::TryFrom;
 use std::time::SystemTime;
 use tokio_rustls::webpki;
+use tokio_rustls::webpki::DnsName;
 
 type SignatureAlgorithms = &'static [&'static webpki::SignatureAlgorithm];
 
@@ -33,9 +37,9 @@ pub fn pki_error(error: webpki::Error) -> Error {
     }
 }
 
-pub struct AllowAnyAnonymousOrAuthenticatedServer;
+pub struct AllowAnonymousOrAnyCert;
 
-impl ClientCertVerifier for AllowAnyAnonymousOrAuthenticatedServer {
+impl ClientCertVerifier for AllowAnonymousOrAnyCert {
     fn offer_client_auth(&self) -> bool {
         true
     }
@@ -49,11 +53,8 @@ impl ClientCertVerifier for AllowAnyAnonymousOrAuthenticatedServer {
     }
 
     fn verify_client_cert(&self, end_entity: &Certificate, intermediates: &[Certificate], now: SystemTime) -> Result<ClientCertVerified, Error> {
-        let (cert, chain) = prepare(end_entity, intermediates)?;
-        let now = webpki::Time::try_from(now).map_err(|_| Error::FailedToGetCurrentTime)?;
-        cert.verify_is_valid_tls_server_cert(SUPPORTED_SIG_ALGS, &crate::TLS_SERVER_ROOTS, &chain, now)
-            .map_err(pki_error)
-            .map(|_| ClientCertVerified::assertion())
+        // this is checked only after the first <stream: stanza so we know the from=
+        Ok(ClientCertVerified::assertion())
     }
 }
 
@@ -66,4 +67,60 @@ fn prepare<'a, 'b>(end_entity: &'a Certificate, intermediates: &'a [Certificate]
     let intermediates: Vec<&'a [u8]> = intermediates.iter().map(|cert| cert.0.as_ref()).collect();
 
     Ok((cert, intermediates))
+}
+
+#[derive(Debug)]
+pub struct XmppServerCertVerifier {
+    names: Vec<DnsName>,
+    posh: Option<Posh>,
+}
+
+impl XmppServerCertVerifier {
+    pub fn new(names: Vec<DnsName>, posh: Option<Posh>) -> Self {
+        XmppServerCertVerifier { names, posh }
+    }
+
+    pub fn verify_cert(&self, end_entity: &Certificate, intermediates: &[Certificate], now: SystemTime) -> Result<ServerCertVerified, Error> {
+        if let Some(ref posh) = self.posh {
+            if posh.valid_cert(end_entity.as_ref()) {
+                debug!("posh succeeded for {:?}", self.names.first());
+                return Ok(ServerCertVerified::assertion());
+            } else {
+                // per RFC if POSH fails, continue with other methods
+                debug!("posh failed for {:?}", self.names.first());
+            }
+        }
+        // from WebPkiVerifier, validates CA trusted cert
+        let (cert, chain) = prepare(end_entity, intermediates)?;
+        let webpki_now = webpki::Time::try_from(now).map_err(|_| Error::FailedToGetCurrentTime)?;
+
+        cert.verify_is_valid_tls_server_cert(SUPPORTED_SIG_ALGS, &crate::TLS_SERVER_ROOTS, &chain, webpki_now)
+            .map_err(pki_error)?;
+
+        for name in &self.names {
+            if cert.verify_is_valid_for_dns_name(name.as_ref()).is_ok() {
+                return Ok(ServerCertVerified::assertion());
+            }
+        }
+
+        Err(Error::InvalidCertificateData(format!("invalid peer certificate: all validation attempts failed: {:?}", end_entity)))
+    }
+}
+
+impl ServerCertVerifier for XmppServerCertVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &Certificate,
+        intermediates: &[Certificate],
+        _server_name: &ServerName,
+        _scts: &mut dyn Iterator<Item = &[u8]>,
+        _ocsp_response: &[u8],
+        now: SystemTime,
+    ) -> Result<ServerCertVerified, Error> {
+        self.verify_cert(end_entity, intermediates, now)
+    }
+
+    fn request_scts(&self) -> bool {
+        false
+    }
 }

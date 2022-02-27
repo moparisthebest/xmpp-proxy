@@ -27,6 +27,8 @@ futures = "0.3"
 die = "0.2"
 anyhow = "1.0"
 tokio = { version = "1.9", features = ["net", "rt", "rt-multi-thread", "macros", "io-util"] }
+ring = "0.16"
+data-encoding = "2.3"
 
 # logging deps
 log = "0.4"
@@ -67,3 +69,6 @@ logging = ["rand", "env_logger"]
 
 [package.metadata.cargo-all-features]
 skip_optional_dependencies = true
+
+[dev-dependencies]
+serde_json = "1.0"

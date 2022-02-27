@@ -6,9 +6,9 @@ use std::{net::SocketAddr, sync::Arc};
 use anyhow::Result;
 
 #[cfg(feature = "outgoing")]
-pub async fn quic_connect(target: SocketAddr, server_name: &str, is_c2s: bool, config: OutgoingConfig) -> Result<(StanzaWrite, StanzaRead)> {
+pub async fn quic_connect(target: SocketAddr, server_name: &str, config: OutgoingVerifierConfig) -> Result<(StanzaWrite, StanzaRead)> {
     let bind_addr = "0.0.0.0:0".parse().unwrap();
-    let client_cfg = config.client_cfg_alpn(is_c2s);
+    let client_cfg = config.config_alpn;
 
     let mut endpoint = quinn::Endpoint::client(bind_addr)?;
     endpoint.set_default_client_config(quinn::ClientConfig::new(client_cfg));

@@ -8,7 +8,6 @@ use std::net::SocketAddr;
 
 pub use log::{debug, error, info, log_enabled, trace};
 use rustls::{Certificate, ServerConnection};
-use tokio_rustls::webpki::DnsNameRef;
 
 pub fn to_str(buf: &[u8]) -> std::borrow::Cow<'_, str> {
     String::from_utf8_lossy(buf)
@@ -138,24 +137,10 @@ pub enum ServerCerts {
 }
 
 impl ServerCerts {
-    pub fn valid(&self, dns_name: DnsNameRef) -> bool {
-        use std::convert::TryFrom;
-        use tokio_rustls::webpki;
-        self.first_peer_cert()
-            .and_then(|c| {
-                if let Ok(cert) = webpki::EndEntityCert::try_from(c.0.as_ref()) {
-                    cert.verify_is_valid_for_dns_name(dns_name).map(|_| true).ok()
-                } else {
-                    Some(false)
-                }
-            })
-            .unwrap_or(false)
-    }
-
-    pub fn first_peer_cert(&self) -> Option<Certificate> {
+    pub fn peer_certificates(&self) -> Option<Vec<Certificate>> {
         match self {
-            ServerCerts::Tls(c) => c.peer_certificates().map(|c| c[0].clone()),
-            ServerCerts::Quic(c) => c.peer_identity().and_then(|v| v.downcast::<Vec<Certificate>>().ok()).map(|v| v[0].clone()),
+            ServerCerts::Tls(c) => c.peer_certificates().map(|c| c.to_vec()),
+            ServerCerts::Quic(c) => c.peer_identity().and_then(|v| v.downcast::<Vec<Certificate>>().ok()).map(|v| v.to_vec()),
         }
     }
 
