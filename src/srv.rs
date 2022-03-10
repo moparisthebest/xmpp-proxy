@@ -527,7 +527,7 @@ mod tests {
     use crate::srv::*;
 
     fn valid_posh(posh: &[u8], cert: &[u8]) -> bool {
-        let posh: PoshJson = serde_json::from_slice(&posh[..]).unwrap();
+        let posh: PoshJson = serde_json::from_slice(posh).unwrap();
         let cert = BASE64.decode(cert).unwrap();
         println!("posh: {:?}", posh);
         if let PoshJson::PoshFingerprints { fingerprints, expires } = posh {

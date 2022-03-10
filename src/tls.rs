@@ -74,8 +74,6 @@ pub fn spawn_tls_listener(local_addr: SocketAddr, config: CloneableConfig, accep
                 }
             });
         }
-        #[allow(unreachable_code)]
-        Ok(())
     })
 }
 

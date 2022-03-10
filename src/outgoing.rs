@@ -40,7 +40,5 @@ pub fn spawn_outgoing_listener(local_addr: SocketAddr, config: OutgoingConfig) -
                 }
             });
         }
-        #[allow(unreachable_code)]
-        Ok(())
     })
 }
