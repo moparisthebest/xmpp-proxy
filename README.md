@@ -139,5 +139,4 @@ GNU/AGPLv3 - Check LICENSE.md for details
 Thanks [rxml](https://github.com/horazont/rxml) for afl-fuzz seeds
 
 #### todo
-  1. sasl external for s2s, initiating and receiving
-  2. XEP for XMPP-over-QUIC and XMPP-S2S-over-WebSocket
+  1. XEP for XMPP-over-QUIC and XMPP-S2S-over-WebSocket
