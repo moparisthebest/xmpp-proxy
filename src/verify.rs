@@ -52,7 +52,7 @@ impl ClientCertVerifier for AllowAnonymousOrAnyCert {
         Some(Vec::new())
     }
 
-    fn verify_client_cert(&self, end_entity: &Certificate, intermediates: &[Certificate], now: SystemTime) -> Result<ClientCertVerified, Error> {
+    fn verify_client_cert(&self, _: &Certificate, _: &[Certificate], _: SystemTime) -> Result<ClientCertVerified, Error> {
         // this is checked only after the first <stream: stanza so we know the from=
         Ok(ClientCertVerified::assertion())
     }

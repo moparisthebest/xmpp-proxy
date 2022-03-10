@@ -23,10 +23,10 @@ pub async fn quic_connect(target: SocketAddr, server_name: &str, config: Outgoin
 
 #[cfg(feature = "incoming")]
 impl Config {
-    pub fn quic_server_config(&self) -> Result<ServerConfig> {
+    pub fn quic_server_config(&self, cert_key: Arc<CertsKey>) -> Result<ServerConfig> {
         let transport_config = TransportConfig::default();
         // todo: configure transport_config here if needed
-        let server_config = self.server_config()?;
+        let server_config = self.server_config(cert_key)?;
         let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(server_config));
         server_config.transport = Arc::new(transport_config);
 
@@ -62,7 +62,6 @@ pub fn spawn_quic_listener(local_addr: SocketAddr, config: CloneableConfig, serv
             });
         }
         error!("quic listener shutting down, should never happen????");
-        #[allow(unreachable_code)]
         Ok(())
     })
 }

@@ -26,7 +26,7 @@ serde = { version = "1.0", features = ["derive"] }
 futures = "0.3"
 die = "0.2"
 anyhow = "1.0"
-tokio = { version = "1.9", features = ["net", "rt", "rt-multi-thread", "macros", "io-util"] }
+tokio = { version = "1.9", features = ["net", "rt", "rt-multi-thread", "macros", "io-util", "signal"] }
 ring = "0.16"
 data-encoding = "2.3"
 
