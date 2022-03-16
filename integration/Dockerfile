@@ -35,7 +35,7 @@ FROM base
 
 COPY --from=build /build/*/*.pkg.tar* /tmp/
 
-RUN pacman -S --noconfirm --disable-download-timeout --needed bind nginx prosody lua52-sec nss mkcert curl && \
+RUN pacman -S --noconfirm --disable-download-timeout --needed bind nginx prosody lua52-sec ejabberd nss mkcert curl && \
     pacman -U --noconfirm --needed /tmp/*.pkg.tar* && rm -f /tmp/*.pkg.tar* && \
     mkdir -p /opt/xmpp-proxy/prosody-modules/ /opt/prosody-modules/ /scansion && mkcert -install && \
     mkdir -p /etc/certs/ecdsa && cd /etc/certs/ecdsa && \

@@ -100,6 +100,9 @@ run_test() {
     # start the prosody servers if required
     [ -f ./prosody1.cfg.lua ] && run_container -d -v ./prosody1.cfg.lua:/etc/prosody/prosody.cfg.lua:ro 20 server1 prosody
     [ -f ./prosody2.cfg.lua ] && run_container -d -v ./prosody2.cfg.lua:/etc/prosody/prosody.cfg.lua:ro 30 server2 prosody
+    # or the ejabberd servers
+    [ -f ./ejabberd1.yml ] && run_container -d -v ./ejabberd1.yml:/etc/ejabberd/ejabberd.yml:ro 20 server1 /usr/bin/ejabberdctl foreground
+    [ -f ./ejabberd2.yml ] && run_container -d -v ./ejabberd2.yml:/etc/ejabberd/ejabberd.yml:ro 30 server2 /usr/bin/ejabberdctl foreground
 
     [ -f ./xmpp-proxy1.toml ] && run_container -d $xmpp_proxy_bind -v ./xmpp-proxy1.toml:/etc/xmpp-proxy/xmpp-proxy.toml:ro 40 xp1 xmpp-proxy
     [ -f ./xmpp-proxy2.toml ] && run_container -d $xmpp_proxy_bind -v ./xmpp-proxy2.toml:/etc/xmpp-proxy/xmpp-proxy.toml:ro 50 xp2 xmpp-proxy
@@ -113,11 +116,16 @@ run_test() {
     podman exec server1 prosodyctl register juliet two.example.org pass
     podman exec server2 prosodyctl register romeo  one.example.org pass
     podman exec server2 prosodyctl register juliet two.example.org pass
+
+    podman exec server1 ejabberdctl register romeo  one.example.org pass
+    podman exec server1 ejabberdctl register juliet two.example.org pass
+    podman exec server2 ejabberdctl register romeo  one.example.org pass
+    podman exec server2 ejabberdctl register juliet two.example.org pass
     set -e
 
     # run the actual tests
     tests="$(cat tests || echo "-d .")"
-    run_container -w /scansion/ 90 scansion scansion $tests
+    run_container -w /scansion/ 89 scansion scansion $tests
     # juliet_messages_romeo.scs  juliet_presence.scs  romeo_messages_juliet.scs  romeo_presence.scs
 
     cleanup
