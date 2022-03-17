@@ -1,0 +1,1 @@
+{"links":[{"rel":"urn:xmpp:alt-connections:xbosh","href":"https://example.org/http-bind"},{"rel":"urn:xmpp:alt-connections:websocket","href":"wss://example.org/xmpp-websocket"}]}
