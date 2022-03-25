@@ -39,19 +39,19 @@ RUN pacman -S --noconfirm --disable-download-timeout --needed bind nginx prosody
     pacman -U --noconfirm --needed /tmp/*.pkg.tar* && rm -f /tmp/*.pkg.tar* && \
     mkdir -p /opt/xmpp-proxy/prosody-modules/ /opt/prosody-modules/ /scansion && mkcert -install && \
     mkdir -p /etc/certs/ecdsa && cd /etc/certs/ecdsa && \
-    mkcert -ecdsa -cert-file one.example.org.crt -key-file one.example.org.key one.example.org && \
-    mkcert -ecdsa -cert-file two.example.org.crt -key-file two.example.org.key two.example.org && \
-    mkcert -ecdsa -cert-file xp1.example.org.crt -key-file xp1.example.org.key xp1.example.org && \
-    mkcert -ecdsa -cert-file xp2.example.org.crt -key-file xp2.example.org.key xp2.example.org && \
-    mkcert -ecdsa -cert-file wildcard.crt        -key-file wildcard.key        '*.example.org' && \
+    mkcert -ecdsa -client -cert-file one.example.org.crt -key-file one.example.org.key one.example.org && \
+    mkcert -ecdsa -client -cert-file two.example.org.crt -key-file two.example.org.key two.example.org && \
+    mkcert -ecdsa -client -cert-file xp1.example.org.crt -key-file xp1.example.org.key xp1.example.org && \
+    mkcert -ecdsa -client -cert-file xp2.example.org.crt -key-file xp2.example.org.key xp2.example.org && \
+    mkcert -ecdsa -client -cert-file wildcard.crt        -key-file wildcard.key        '*.example.org' && \
     cp wildcard.crt legacy_ssl.crt && cp wildcard.key legacy_ssl.key && \
     cp wildcard.crt https.crt      && cp wildcard.key https.key && \
     mkdir -p /etc/certs/rsa && cd /etc/certs/rsa && \
-    mkcert        -cert-file one.example.org.crt -key-file one.example.org.key one.example.org && \
-    mkcert        -cert-file two.example.org.crt -key-file two.example.org.key two.example.org && \
-    mkcert        -cert-file xp1.example.org.crt -key-file xp1.example.org.key xp1.example.org && \
-    mkcert        -cert-file xp2.example.org.crt -key-file xp2.example.org.key xp2.example.org && \
-    mkcert        -cert-file wildcard.crt        -key-file wildcard.key        '*.example.org' && \
+    mkcert        -client -cert-file one.example.org.crt -key-file one.example.org.key one.example.org && \
+    mkcert        -client -cert-file two.example.org.crt -key-file two.example.org.key two.example.org && \
+    mkcert        -client -cert-file xp1.example.org.crt -key-file xp1.example.org.key xp1.example.org && \
+    mkcert        -client -cert-file xp2.example.org.crt -key-file xp2.example.org.key xp2.example.org && \
+    mkcert        -client -cert-file wildcard.crt        -key-file wildcard.key        '*.example.org' && \
     cp wildcard.crt legacy_ssl.crt && cp wildcard.key legacy_ssl.key && \
     cp wildcard.crt https.crt      && cp wildcard.key https.key && \
     chmod -R 777 /etc/certs/ && rm -rf /etc/prosody/certs && ln -sf /etc/certs/rsa /etc/prosody/certs

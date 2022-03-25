@@ -1645,5 +1645,6 @@ dependencies = [
  "tokio-tungstenite",
  "toml",
  "trust-dns-resolver",
+ "untrusted",
  "webpki-roots",
 ]

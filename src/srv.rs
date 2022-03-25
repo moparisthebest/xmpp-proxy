@@ -1,7 +1,8 @@
 #![allow(clippy::upper_case_acronyms)]
 
+use std::cmp::Ordering;
 use std::convert::TryFrom;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use data_encoding::BASE64;
 use ring::digest::{Algorithm, Context as DigestContext, SHA256, SHA512};
@@ -27,24 +28,128 @@ fn make_resolver() -> TokioAsyncResolver {
     TokioAsyncResolver::tokio(config, options).unwrap()
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum XmppConnectionType {
     StartTLS,
     DirectTLS,
     #[cfg(feature = "quic")]
     QUIC,
     #[cfg(feature = "websocket")]
-    WebSocket(Uri, String, bool),
+    WebSocket(Uri, String),
+}
+
+impl XmppConnectionType {
+    fn idx(&self) -> u8 {
+        match self {
+            XmppConnectionType::QUIC => 0,
+            XmppConnectionType::DirectTLS => 1,
+            XmppConnectionType::StartTLS => 2,
+            XmppConnectionType::WebSocket(_, _) => 3,
+        }
+    }
+}
+
+impl Ord for XmppConnectionType {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let cmp = self.idx().cmp(&other.idx());
+        if cmp != Ordering::Equal {
+            return cmp;
+        }
+        // so they are the same type, but WebSocket is a special case...
+        match (self, other) {
+            (XmppConnectionType::WebSocket(self_uri, self_origin), XmppConnectionType::WebSocket(other_uri, other_origin)) => {
+                let cmp = self_uri.to_string().cmp(&other_uri.to_string());
+                if cmp != Ordering::Equal {
+                    return cmp;
+                }
+                self_origin.cmp(other_origin)
+            }
+            (_, _) => Ordering::Equal,
+        }
+    }
+}
+
+impl PartialOrd for XmppConnectionType {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 #[derive(Debug)]
 pub struct XmppConnection {
     conn_type: XmppConnectionType,
     priority: u16,
-    #[allow(dead_code)]
     weight: u16, // todo: use weight
     port: u16,
     target: String,
+    secure: bool,
+    ips: Vec<IpAddr>,
+    #[allow(dead_code)]
+    ech: Option<String>,
+}
+
+impl PartialEq for XmppConnection {
+    fn eq(&self, other: &Self) -> bool {
+        self.conn_type == other.conn_type && self.port == other.port && self.target == other.target
+    }
+}
+
+impl Ord for XmppConnection {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // this should put equal things next to each other, but things we want to keep further to the left
+        let cmp = self.conn_type.cmp(&other.conn_type);
+        if cmp != Ordering::Equal {
+            return cmp;
+        }
+        let cmp = self.port.cmp(&other.port);
+        if cmp != Ordering::Equal {
+            return cmp;
+        }
+        let cmp = self.target.cmp(&other.target);
+        if cmp != Ordering::Equal {
+            return cmp;
+        }
+        // end of equality checks, now preferences:
+        // backwards on purpose, so secure is earlier in the list
+        let cmp = other.secure.cmp(&self.secure);
+        if cmp != Ordering::Equal {
+            return cmp;
+        }
+        // lowest priority preferred
+        let cmp = self.priority.cmp(&other.priority);
+        if cmp != Ordering::Equal {
+            return cmp;
+        }
+        // highest weight preferred
+        other.weight.cmp(&self.priority)
+    }
+}
+
+impl Eq for XmppConnection {}
+
+impl PartialOrd for XmppConnection {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+fn sort_dedup(ret: &mut Vec<XmppConnection>) {
+    ret.sort();
+    ret.dedup();
+    // now sort by priority
+    ret.sort_by(|a, b| {
+        let cmp = a.priority.cmp(&b.priority);
+        if cmp != Ordering::Equal {
+            return cmp;
+        }
+        // prioritize "better" protocols todo: we *could* prioritize these first before priority...
+        let cmp = a.conn_type.idx().cmp(&b.conn_type.idx());
+        if cmp != Ordering::Equal {
+            return cmp;
+        }
+        // higher weight first todo: still not ideal
+        b.weight.cmp(&a.weight)
+    });
 }
 
 impl XmppConnection {
@@ -57,12 +162,17 @@ impl XmppConnection {
         config: OutgoingVerifierConfig,
     ) -> Result<(StanzaWrite, StanzaRead, SocketAddr, &'static str)> {
         debug!("{} attempting connection to SRV: {:?}", client_addr.log_from(), self);
-        // todo: need to set options to Ipv4AndIpv6
-        let ips = RESOLVER.lookup_ip(self.target.clone()).await?;
+        // todo: for DNSSEC we need to optionally allow target in addition to domain, but what for SNI
+        let domain = if self.secure { &self.target } else { domain };
+        //let ips = RESOLVER.lookup_ip(self.target.clone()).await?;
+        let ips = if self.ips.is_empty() {
+            RESOLVER.lookup_ip(self.target.clone()).await?.iter().collect()
+        } else {
+            self.ips.clone() // todo: avoid clone?
+        };
         for ip in ips.iter() {
-            let to_addr = SocketAddr::new(ip, self.port);
+            let to_addr = SocketAddr::new(*ip, self.port);
             debug!("{} trying ip {}", client_addr.log_from(), to_addr);
-            // todo: for DNSSEC we need to optionally allow target in addition to domain, but what for SNI
             match self.conn_type {
                 XmppConnectionType::StartTLS => match crate::starttls_connect(to_addr, domain, stream_open, in_filter, config.clone()).await {
                     Ok((wr, rd)) => return Ok((wr, rd, to_addr, "starttls-out")),
@@ -79,12 +189,10 @@ impl XmppConnection {
                 },
                 #[cfg(feature = "websocket")]
                 // todo: when websocket is found via DNS, we need to validate cert against domain, *not* target, this is a security problem with XEP-0156, we are doing it the secure but likely unexpected way here for now
-                XmppConnectionType::WebSocket(ref url, ref origin, ref secure) => {
-                    match crate::websocket_connect(to_addr, if *secure { &self.target } else { domain }, url, origin, config.clone()).await {
-                        Ok((wr, rd)) => return Ok((wr, rd, to_addr, "websocket-out")),
-                        Err(e) => error!("websocket connection failed to IP {} from TXT {}, error: {}", to_addr, url, e),
-                    }
-                }
+                XmppConnectionType::WebSocket(ref url, ref origin) => match crate::websocket_connect(to_addr, domain, url, origin, config.clone()).await {
+                    Ok((wr, rd)) => return Ok((wr, rd, to_addr, "websocket-out")),
+                    Err(e) => error!("websocket connection failed to IP {} from TXT {}, error: {}", to_addr, url, e),
+                },
             }
         }
         bail!("cannot connect to any IPs for SRV: {}", self.target)
@@ -101,6 +209,9 @@ fn collect_srvs(ret: &mut Vec<XmppConnection>, srv_records: std::result::Result<
                     weight: srv.weight(),
                     port: srv.port(),
                     target: srv.target().to_ascii(),
+                    secure: false, // todo: support dnssec here, and if true, look up TLSA
+                    ips: Vec::new(),
+                    ech: None,
                 });
             }
         }
@@ -135,16 +246,19 @@ fn wss_to_srv(url: &str, secure: bool) -> Option<XmppConnection> {
         443
     };
     Some(XmppConnection {
-        conn_type: XmppConnectionType::WebSocket(url, origin, secure),
+        conn_type: XmppConnectionType::WebSocket(url, origin),
         priority: u16::MAX,
         weight: 0,
         port,
         target,
+        secure,
+        ips: Vec::new(),
+        ech: None,
     })
 }
 
 #[cfg(feature = "websocket")]
-fn collect_txts(ret: &mut Vec<XmppConnection>, secure_urls: Vec<String>, txt_records: std::result::Result<TxtLookup, ResolveError>, is_c2s: bool) {
+fn collect_txts(ret: &mut Vec<XmppConnection>, txt_records: std::result::Result<TxtLookup, ResolveError>, is_c2s: bool) {
     if let Ok(txt_records) = txt_records {
         for txt in txt_records.iter() {
             for txt in txt.iter() {
@@ -152,8 +266,8 @@ fn collect_txts(ret: &mut Vec<XmppConnection>, secure_urls: Vec<String>, txt_rec
                 if txt.starts_with(if is_c2s { b"_xmpp-client-websocket=wss://" } else { b"_xmpp-server-websocket=wss://" }) {
                     // 23 is the length of "_xmpp-client-websocket=" and "_xmpp-server-websocket="
                     if let Ok(url) = String::from_utf8(txt[23..].to_vec()) {
-                        if !secure_urls.contains(&url) {
-                            if let Some(srv) = wss_to_srv(&url, false) {
+                        if let Some(srv) = wss_to_srv(&url, false) {
+                            if !ret.contains(&srv) {
                                 ret.push(srv);
                             }
                         }
@@ -168,16 +282,11 @@ fn collect_txts(ret: &mut Vec<XmppConnection>, secure_urls: Vec<String>, txt_rec
 
 pub async fn get_xmpp_connections(domain: &str, is_c2s: bool) -> Result<(Vec<XmppConnection>, XmppServerCertVerifier)> {
     let mut valid_tls_cert_server_names: Vec<DnsName> = vec![DnsNameRef::try_from_ascii_str(domain)?.to_owned()];
-    let (starttls, direct_tls, quic, websocket_txt, websocket_rel) = if is_c2s {
-        ("_xmpp-client._tcp", "_xmpps-client._tcp", "_xmppq-client._udp", "_xmppconnect", "urn:xmpp:alt-connections:websocket")
+    let mut sha256_pinnedpubkeys = Vec::new();
+    let (starttls, direct_tls, quic, websocket_txt) = if is_c2s {
+        ("_xmpp-client._tcp", "_xmpps-client._tcp", "_xmppq-client._udp", "_xmppconnect")
     } else {
-        (
-            "_xmpp-server._tcp",
-            "_xmpps-server._tcp",
-            "_xmppq-server._udp",
-            "_xmppconnect-server",
-            "urn:xmpp:alt-connections:s2s-websocket",
-        )
+        ("_xmpp-server._tcp", "_xmpps-server._tcp", "_xmppq-server._udp", "_xmppconnect-server")
     };
 
     let starttls = format!("{}.{}.", starttls, domain).into_name()?;
@@ -186,6 +295,8 @@ pub async fn get_xmpp_connections(domain: &str, is_c2s: bool) -> Result<(Vec<Xmp
     let quic = format!("{}.{}.", quic, domain).into_name()?;
     #[cfg(feature = "websocket")]
     let websocket_txt = format!("{}.{}.", websocket_txt, domain).into_name()?;
+
+    let mut ret = Vec::new();
 
     // this lets them run concurrently but not in parallel, could spawn parallel tasks but... worth it ?
     // todo: don't look up websocket or quic records when they are disabled
@@ -205,46 +316,34 @@ pub async fn get_xmpp_connections(domain: &str, is_c2s: bool) -> Result<(Vec<Xmp
         RESOLVER.srv_lookup(quic),
         //#[cfg(feature = "websocket")]
         RESOLVER.txt_lookup(websocket_txt),
-        collect_host_meta(domain, websocket_rel),
+        collect_host_meta(&mut ret, &mut sha256_pinnedpubkeys, domain, is_c2s),
         collect_posh(domain),
     );
-
-    let mut ret = Vec::new();
-    collect_srvs(&mut ret, starttls, XmppConnectionType::StartTLS);
-    collect_srvs(&mut ret, direct_tls, XmppConnectionType::DirectTLS);
-    #[cfg(feature = "quic")]
-    collect_srvs(&mut ret, quic, XmppConnectionType::QUIC);
-    #[cfg(feature = "websocket")]
-    {
-        let urls = websocket_host.unwrap_or_default();
-        for url in &urls {
-            if let Some(url) = wss_to_srv(url, true) {
-                ret.push(url);
-            }
-        }
-        collect_txts(&mut ret, urls, websocket_txt, is_c2s);
+    if let Ok(Some(_ttl)) = websocket_host {
+        // todo: cache for ttl
+    } else {
+        // ignore everything else if new host-meta format
+        #[cfg(feature = "websocket")]
+        collect_txts(&mut ret, websocket_txt, is_c2s);
+        collect_srvs(&mut ret, starttls, XmppConnectionType::StartTLS);
+        collect_srvs(&mut ret, direct_tls, XmppConnectionType::DirectTLS);
+        #[cfg(feature = "quic")]
+        collect_srvs(&mut ret, quic, XmppConnectionType::QUIC);
     }
-    ret.sort_by(|a, b| a.priority.cmp(&b.priority));
-    // todo: do something with weight
 
-    #[allow(clippy::single_match)]
+    sort_dedup(&mut ret);
+
     for srv in &ret {
-        match srv.conn_type {
-            #[cfg(feature = "websocket")]
-            XmppConnectionType::WebSocket(_, _, ref secure) => {
-                if *secure {
-                    if let Ok(target) = DnsNameRef::try_from_ascii_str(srv.target.as_str()) {
-                        let target = target.to_owned();
-                        if !valid_tls_cert_server_names.contains(&target) {
-                            valid_tls_cert_server_names.push(target);
-                        }
-                    }
+        if srv.secure {
+            if let Ok(target) = DnsNameRef::try_from_ascii_str(srv.target.as_str()) {
+                let target = target.to_owned();
+                if !valid_tls_cert_server_names.contains(&target) {
+                    valid_tls_cert_server_names.push(target);
                 }
             }
-            _ => {}
         }
     }
-    let cert_verifier = XmppServerCertVerifier::new(valid_tls_cert_server_names, posh.ok());
+    let cert_verifier = XmppServerCertVerifier::new(valid_tls_cert_server_names, posh.ok(), sha256_pinnedpubkeys);
 
     if ret.is_empty() {
         // default starttls ports
@@ -254,6 +353,9 @@ pub async fn get_xmpp_connections(domain: &str, is_c2s: bool) -> Result<(Vec<Xmp
             target: domain.to_string(),
             conn_type: XmppConnectionType::StartTLS,
             port: if is_c2s { 5222 } else { 5269 },
+            secure: false,
+            ips: Vec::new(),
+            ech: None,
         });
         // by spec there are no default direct/quic ports, but we are going 443
         ret.push(XmppConnection {
@@ -262,6 +364,9 @@ pub async fn get_xmpp_connections(domain: &str, is_c2s: bool) -> Result<(Vec<Xmp
             target: domain.to_string(),
             conn_type: XmppConnectionType::DirectTLS,
             port: 443,
+            secure: false,
+            ips: Vec::new(),
+            ech: None,
         });
         #[cfg(feature = "quic")]
         ret.push(XmppConnection {
@@ -270,6 +375,9 @@ pub async fn get_xmpp_connections(domain: &str, is_c2s: bool) -> Result<(Vec<Xmp
             target: domain.to_string(),
             conn_type: XmppConnectionType::QUIC,
             port: 443,
+            secure: false,
+            ips: Vec::new(),
+            ech: None,
         });
     }
 
@@ -328,40 +436,171 @@ pub async fn srv_connect(
 }
 
 #[cfg(not(feature = "websocket"))]
-async fn collect_host_meta(domain: &str, rel: &str) -> Result<Vec<String>> {
-    bail!("websocket disabled")
+async fn collect_host_meta(ret: &mut Vec<XmppConnection>, sha256_pinnedpubkeys: &mut Vec<String>, domain: &str, is_c2s: bool) -> Result<Option<u16>> {
+    collect_host_meta_json(ret, sha256_pinnedpubkeys, domain, is_c2s)
 }
 
 #[cfg(feature = "websocket")]
-async fn collect_host_meta(domain: &str, rel: &str) -> Result<Vec<String>> {
-    match tokio::join!(collect_host_meta_xml(domain, rel), collect_host_meta_json(domain, rel)) {
-        (Ok(mut xml), Ok(json)) => {
-            combine_uniq(&mut xml, json);
-            Ok(xml)
+async fn collect_host_meta(ret: &mut Vec<XmppConnection>, sha256_pinnedpubkeys: &mut Vec<String>, domain: &str, is_c2s: bool) -> Result<Option<u16>> {
+    let mut xml = Vec::new();
+    match tokio::join!(collect_host_meta_json(ret, sha256_pinnedpubkeys, domain, is_c2s), collect_host_meta_xml(&mut xml, domain, is_c2s)) {
+        (Ok(Some(ttl)), _) => Ok(Some(ttl)), // if ttl is returned, ignore host-meta.xml
+        (_, Ok(_)) => {
+            ret.append(&mut xml);
+            Ok(None)
         }
-        (_, Ok(json)) => Ok(json),
-        (xml, _) => xml,
+        (json, _) => json,
     }
 }
 
-#[cfg(feature = "websocket")]
-async fn collect_host_meta_json(domain: &str, rel: &str) -> Result<Vec<String>> {
-    #[derive(Deserialize)]
-    struct HostMeta {
-        links: Vec<Link>,
-    }
-    #[derive(Deserialize)]
-    struct Link {
-        rel: String,
-        href: String,
-    }
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "kebab-case")]
+struct HostMeta {
+    xmpp: Option<HostMetaXmpp>,
+    links: Vec<Link>,
+}
 
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "kebab-case")]
+struct HostMetaXmpp {
+    ttl: u16,
+    #[serde(default)]
+    public_key_pins_sha_256: Vec<String>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(tag = "rel", rename_all = "kebab-case")]
+enum Link {
+    #[serde(rename = "urn:xmpp:alt-connections:websocket")]
+    WebSocket {
+        href: String,
+        #[serde(flatten)]
+        link: Option<LinkCommon>,
+    },
+    #[serde(rename = "urn:xmpp:alt-connections:tls")]
+    DirectTLS {
+        #[serde(flatten)]
+        link: LinkCommon,
+        port: u16,
+    },
+    #[serde(rename = "urn:xmpp:alt-connections:quic")]
+    Quic {
+        #[serde(flatten)]
+        link: LinkCommon,
+        port: u16,
+    },
+    #[serde(rename = "urn:xmpp:alt-connections:s2s-websocket")]
+    S2SWebSocket {
+        href: String,
+        #[serde(flatten)]
+        link: LinkCommon,
+    },
+    #[serde(rename = "urn:xmpp:alt-connections:s2s-tls")]
+    S2SDirectTLS {
+        #[serde(flatten)]
+        link: LinkCommon,
+        port: u16,
+    },
+    #[serde(rename = "urn:xmpp:alt-connections:s2s-quic")]
+    S2SQuic {
+        #[serde(flatten)]
+        link: LinkCommon,
+        port: u16,
+    },
+    #[serde(other)]
+    Unknown,
+}
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "kebab-case")]
+struct LinkCommon {
+    ips: Vec<IpAddr>,
+    priority: u16,
+    weight: u16,
+    sni: String,
+    ech: Option<String>,
+}
+
+impl LinkCommon {
+    pub fn into_xmpp_connection(self, conn_type: XmppConnectionType, port: u16) -> Option<XmppConnection> {
+        if self.ips.is_empty() {
+            error!("invalid empty ips");
+            return None;
+        }
+        Some(XmppConnection {
+            conn_type,
+            port,
+            priority: self.priority,
+            weight: self.weight,
+            target: self.sni,
+            ips: self.ips,
+            ech: self.ech,
+            secure: true,
+        })
+    }
+}
+
+impl Link {
+    pub fn into_xmpp_connection(self, is_c2s: bool) -> Option<XmppConnection> {
+        use XmppConnectionType::*;
+        let (srv_is_c2s, port, link, conn_type) = match self {
+            Link::DirectTLS { port, link } => (true, port, link, DirectTLS),
+            Link::Quic { port, link } => (true, port, link, QUIC),
+            Link::S2SDirectTLS { port, link } => (false, port, link, DirectTLS),
+            Link::S2SQuic { port, link } => (false, port, link, QUIC),
+            Link::WebSocket { href, link } => {
+                return if is_c2s {
+                    let srv = wss_to_srv(&href, true)?;
+                    if let Some(link) = link {
+                        link.into_xmpp_connection(srv.conn_type, srv.port)
+                    } else {
+                        Some(srv)
+                    }
+                } else {
+                    None
+                };
+            }
+            Link::S2SWebSocket { href, link } => {
+                return if !is_c2s {
+                    let srv = wss_to_srv(&href, true)?;
+                    link.into_xmpp_connection(srv.conn_type, srv.port)
+                } else {
+                    None
+                };
+            }
+
+            Link::Unknown => return None,
+        };
+
+        if srv_is_c2s == is_c2s {
+            link.into_xmpp_connection(conn_type, port)
+        } else {
+            None
+        }
+    }
+}
+
+impl HostMeta {
+    pub fn collect(self, ret: &mut Vec<XmppConnection>, sha256_pinnedpubkeys: &mut Vec<String>, is_c2s: bool) -> Option<u16> {
+        for link in self.links {
+            if let Some(srv) = link.into_xmpp_connection(is_c2s) {
+                ret.push(srv);
+            }
+        }
+        if let Some(xmpp) = self.xmpp {
+            sha256_pinnedpubkeys.extend(xmpp.public_key_pins_sha_256);
+            Some(xmpp.ttl)
+        } else {
+            None
+        }
+    }
+}
+
+async fn collect_host_meta_json(ret: &mut Vec<XmppConnection>, sha256_pinnedpubkeys: &mut Vec<String>, domain: &str, is_c2s: bool) -> Result<Option<u16>> {
     let url = format!("https://{}/.well-known/host-meta.json", domain);
     let resp = https_get(&url).await?;
     if resp.status().is_success() {
         let resp = resp.json::<HostMeta>().await?;
-        // we will only support wss:// (TLS) not ws:// (plain text)
-        Ok(resp.links.iter().filter(|l| l.rel == rel && l.href.starts_with("wss://")).map(|l| l.href.clone()).collect())
+        Ok(resp.collect(ret, sha256_pinnedpubkeys, is_c2s))
     } else {
         bail!("failed with status code {} for url {}", resp.status(), url)
     }
@@ -396,11 +635,21 @@ async fn parse_host_meta_xml(rel: &str, bytes: &[u8]) -> Result<Vec<String>> {
 }
 
 #[cfg(feature = "websocket")]
-async fn collect_host_meta_xml(domain: &str, rel: &str) -> Result<Vec<String>> {
+async fn collect_host_meta_xml(ret: &mut Vec<XmppConnection>, domain: &str, is_c2s: bool) -> Result<()> {
+    if !is_c2s {
+        bail!("host-meta XML unsupported for S2s");
+    }
     let url = format!("https://{}/.well-known/host-meta", domain);
     let resp = https_get(&url).await?;
     if resp.status().is_success() {
-        parse_host_meta_xml(rel, resp.bytes().await?.as_ref()).await
+        let rel = "urn:xmpp:alt-connections:websocket";
+        let hosts = parse_host_meta_xml(rel, resp.bytes().await?.as_ref()).await?;
+        for host in hosts {
+            if let Some(srv) = wss_to_srv(&host, true) {
+                ret.push(srv);
+            }
+        }
+        Ok(())
     } else {
         bail!("failed with status code {} for url {}", resp.status(), url)
     }
@@ -515,7 +764,7 @@ impl Posh {
     }
 }
 
-fn digest(algorithm: &'static Algorithm, buf: &[u8]) -> String {
+pub fn digest(algorithm: &'static Algorithm, buf: &[u8]) -> String {
     let mut context = DigestContext::new(algorithm);
     context.update(buf);
     let digest = context.finish();
@@ -525,6 +774,7 @@ fn digest(algorithm: &'static Algorithm, buf: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use crate::srv::*;
+    use std::path::PathBuf;
 
     fn valid_posh(posh: &[u8], cert: &[u8]) -> bool {
         let posh: PoshJson = serde_json::from_slice(posh).unwrap();
@@ -537,6 +787,17 @@ mod tests {
         } else {
             false
         }
+    }
+
+    fn read_file(file: &str) -> Result<Vec<u8>> {
+        let mut f = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        f.push(file);
+        let mut file = File::open(f)?;
+
+        let mut data = Vec::new();
+        file.read_to_end(&mut data)?;
+
+        Ok(data)
     }
 
     #[test]
@@ -611,13 +872,14 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "websocket")]
     //#[tokio::test]
     async fn http() -> Result<()> {
-        let hosts = collect_host_meta_json("burtrum.org", "urn:xmpp:alt-connections:websocket").await?;
-        println!("{:?}", hosts);
-        let hosts = collect_host_meta_xml("burtrum.org", "urn:xmpp:alt-connections:websocket").await?;
-        println!("{:?}", hosts);
+        let mut hosts = Vec::new();
+        let mut sha256_pinnedpubkeys = Vec::new();
+        let res = collect_host_meta(&mut hosts, &mut sha256_pinnedpubkeys, "burtrum.org", true).await;
+        println!("burtrum.org res: {:?}", res);
+        println!("burtrum.org hosts: {:?}", hosts);
+        println!("burtrum.org hosts: {:?}", sha256_pinnedpubkeys);
         Ok(())
     }
 
@@ -642,6 +904,106 @@ mod tests {
         let xrd = br#"<xrd xmlns="http://docs.oasis-open.org/ns/xri/xrd-1.0"><link rel="urn:xmpp:alt-connections:xbosh" href="https://burtrum.org/http-bind"/><link rel="urn:xmpp:alt-connections:websocket" href="wss://burtrum.org/xmpp-websocket"/><link rel="urn:xmpp:alt-connections:s2s-websocket" href="wss://burtrum.org/xmpp-websocket-s2s"/></xrd>"#;
         assert_eq!(parse_host_meta_xml("urn:xmpp:alt-connections:websocket", xrd).await?, vec!["wss://burtrum.org/xmpp-websocket"]);
 
+        let xrd = read_file("contrib/host-meta/xep-0156-current.xml")?;
+        assert_eq!(parse_host_meta_xml("urn:xmpp:alt-connections:websocket", &xrd).await?, vec!["wss://example.org/xmpp-websocket"]);
         Ok(())
+    }
+
+    #[cfg(feature = "websocket")]
+    #[tokio::test]
+    async fn test_parse_host_meta_json() -> Result<()> {
+        let xrd = read_file("contrib/host-meta/xep-0156-minimal.json")?;
+        let host_meta: HostMeta = serde_json::from_slice(&xrd)?;
+        println!("host_meta: {:?}", host_meta);
+        //assert_eq!(host_meta.links("urn:xmpp:alt-connections:websocket"), vec!["wss://example.org/xmpp-websocket"]);
+
+        let xrd = read_file("contrib/host-meta/xep-0156-current.json")?;
+        let host_meta: HostMeta = serde_json::from_slice(&xrd)?;
+        println!("host_meta: {:?}", host_meta);
+        //assert_eq!(host_meta.links("urn:xmpp:alt-connections:websocket"), vec!["wss://example.org/xmpp-websocket"]);
+
+        let xrd = read_file("contrib/host-meta/xep-0156-proposed.json")?;
+        let host_meta: HostMeta = serde_json::from_slice(&xrd)?;
+        println!("host_meta: {:?}", host_meta);
+        //assert_eq!(host_meta.links("urn:xmpp:alt-connections:websocket"), vec!["wss://example.org/xmpp-websocket"]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_dedup() {
+        let domain = "example.org";
+        let mut ret = Vec::new();
+        ret.push(XmppConnection {
+            priority: 10,
+            weight: 0,
+            target: domain.to_string(),
+            conn_type: XmppConnectionType::DirectTLS,
+            port: 443,
+            secure: false,
+            ips: Vec::new(),
+            ech: None,
+        });
+        ret.push(XmppConnection {
+            priority: 0,
+            weight: 0,
+            target: domain.to_string(),
+            conn_type: XmppConnectionType::StartTLS,
+            port: 5222,
+            secure: false,
+            ips: Vec::new(),
+            ech: None,
+        });
+        ret.push(XmppConnection {
+            priority: 15,
+            weight: 0,
+            target: domain.to_string(),
+            conn_type: XmppConnectionType::DirectTLS,
+            port: 443,
+            secure: true,
+            ips: Vec::new(),
+            ech: None,
+        });
+        ret.push(XmppConnection {
+            priority: 10,
+            weight: 0,
+            target: domain.to_string(),
+            conn_type: XmppConnectionType::DirectTLS,
+            port: 443,
+            secure: true,
+            ips: Vec::new(),
+            ech: None,
+        });
+        ret.push(XmppConnection {
+            priority: 10,
+            weight: 50,
+            target: domain.to_string(),
+            conn_type: XmppConnectionType::DirectTLS,
+            port: 443,
+            secure: true,
+            ips: Vec::new(),
+            ech: None,
+        });
+        ret.push(XmppConnection {
+            priority: 10,
+            weight: 100,
+            target: "example.com".to_string(),
+            conn_type: XmppConnectionType::DirectTLS,
+            port: 443,
+            secure: true,
+            ips: Vec::new(),
+            ech: None,
+        });
+        ret.push(XmppConnection {
+            priority: 0,
+            weight: 100,
+            target: "example.com".to_string(),
+            conn_type: XmppConnectionType::DirectTLS,
+            port: 443,
+            secure: true,
+            ips: Vec::new(),
+            ech: None,
+        });
+        sort_dedup(&mut ret);
+        println!("ret dedup: {:?}", ret);
     }
 }
