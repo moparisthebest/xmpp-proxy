@@ -1,5 +1,6 @@
-use crate::Posh;
+use crate::{digest, Posh};
 use log::debug;
+use ring::digest::SHA256;
 use rustls::client::{ServerCertVerified, ServerCertVerifier};
 use rustls::server::{ClientCertVerified, ClientCertVerifier};
 use rustls::{Certificate, DistinguishedNames, Error, ServerName};
@@ -73,14 +74,31 @@ fn prepare<'a, 'b>(end_entity: &'a Certificate, intermediates: &'a [Certificate]
 pub struct XmppServerCertVerifier {
     names: Vec<DnsName>,
     posh: Option<Posh>,
+    sha256_pinnedpubkeys: Vec<String>,
 }
 
 impl XmppServerCertVerifier {
-    pub fn new(names: Vec<DnsName>, posh: Option<Posh>) -> Self {
-        XmppServerCertVerifier { names, posh }
+    pub fn new(names: Vec<DnsName>, posh: Option<Posh>, sha256_pinnedpubkeys: Vec<String>) -> Self {
+        XmppServerCertVerifier { names, posh, sha256_pinnedpubkeys }
     }
 
     pub fn verify_cert(&self, end_entity: &Certificate, intermediates: &[Certificate], now: SystemTime) -> Result<ServerCertVerified, Error> {
+        if !self.sha256_pinnedpubkeys.is_empty() {
+            let cert = webpki::TrustAnchor::try_from_cert_der(end_entity.0.as_ref()).map_err(pki_error)?;
+            println!("spki.len(): {}", cert.spki.len());
+            println!("spki: {:?}", cert.spki);
+            // todo: what is wrong with webpki? it returns *almost* the right answer but missing these leading bytes:
+            // guess I'll open an issue... (I assume this is some type of algorithm identifying header or something)
+            let mut pubkey: Vec<u8> = vec![48, 130, 1, 34];
+            pubkey.extend(cert.spki);
+
+            if self.sha256_pinnedpubkeys.contains(&digest(&SHA256, &pubkey)) {
+                debug!("pinnedpubkey succeeded for {:?}", self.names.first());
+                return Ok(ServerCertVerified::assertion());
+            }
+            // todo: else fail ????
+        }
+
         if let Some(ref posh) = self.posh {
             if posh.valid_cert(end_entity.as_ref()) {
                 debug!("posh succeeded for {:?}", self.names.first());

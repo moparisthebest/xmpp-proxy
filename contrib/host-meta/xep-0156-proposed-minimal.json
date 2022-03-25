@@ -33,9 +33,6 @@
       "priority": 10,
       "weight": 50,
       "sni": "example.org",
-      "alpn": [
-        "xmpp-client"
-      ],
       "ech": "eG1wcC1jbGllbnQ="
     },
     {
@@ -48,9 +45,6 @@
       "priority": 5,
       "weight": 50,
       "sni": "example.org",
-      "alpn": [
-        "xmpp-client"
-      ],
       "ech": "eG1wcC1jbGllbnQ="
     },
     {
@@ -63,11 +57,6 @@
       "priority": 15,
       "weight": 50,
       "sni": "example.org",
-      "alpn": [
-        "h2",
-        "http/1.1",
-        "h3"
-      ],
       "ech": "eG1wcC1jbGllbnQ="
     },
     {
@@ -80,9 +69,6 @@
       "priority": 10,
       "weight": 50,
       "sni": "example.org",
-      "alpn": [
-        "xmpp-server"
-      ],
       "ech": "eG1wcC1jbGllbnQ="
     },
     {
@@ -95,9 +81,6 @@
       "priority": 5,
       "weight": 50,
       "sni": "example.org",
-      "alpn": [
-        "xmpp-server"
-      ],
       "ech": "eG1wcC1jbGllbnQ="
     }
   ]

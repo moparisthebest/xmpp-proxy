@@ -29,6 +29,7 @@ anyhow = "1.0"
 tokio = { version = "1.9", features = ["net", "rt", "rt-multi-thread", "macros", "io-util", "signal"] }
 ring = "0.16"
 data-encoding = "2.3"
+untrusted = "0.7"
 
 # logging deps
 log = "0.4"

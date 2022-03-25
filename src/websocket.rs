@@ -74,7 +74,7 @@ pub fn to_ws_new(buf: &[u8], mut end_of_first_tag: usize, is_c2s: bool) -> Resul
             .replace("<stream:stream ", "<open ")
             .replace("jabber:server", "urn:ietf:params:xml:ns:xmpp-framing-server")
             .replace("jabber:client", "urn:ietf:params:xml:ns:xmpp-framing")
-            .replace(">", "/>"));
+            .replace('>', "/>"));
     }
     if buf.starts_with(b"</stream:stream") {
         return Ok(r#"<close xmlns="urn:ietf:params:xml:ns:xmpp-framing" />"#.to_string());
