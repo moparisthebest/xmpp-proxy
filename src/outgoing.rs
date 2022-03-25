@@ -5,10 +5,14 @@ async fn handle_outgoing_connection(stream: tokio::net::TcpStream, client_addr: 
 
     let mut in_filter = StanzaFilter::new(config.max_stanza_size_bytes);
 
-    let (in_rd, in_wr) = tokio::io::split(stream);
+    let is_ws = first_bytes_match(&stream, &mut in_filter.buf[0..3], |p| p == b"GET").await?;
 
-    let mut in_rd = StanzaRead::new(in_rd);
-    let mut in_wr = StanzaWrite::new(in_wr);
+    let (mut in_rd, mut in_wr) = if is_ws {
+        incoming_websocket_connection(Box::new(stream), config.max_stanza_size_bytes).await?
+    } else {
+        let (in_rd, in_wr) = tokio::io::split(stream);
+        (StanzaRead::new(in_rd), StanzaWrite::new(in_wr))
+    };
 
     // now read to figure out client vs server
     let (stream_open, is_c2s) = stream_preamble(&mut in_rd, &mut in_wr, client_addr.log_to(), &mut in_filter).await?;

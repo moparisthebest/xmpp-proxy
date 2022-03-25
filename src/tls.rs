@@ -83,35 +83,13 @@ async fn handle_tls_connection(mut stream: tokio::net::TcpStream, client_addr: &
 
     let mut in_filter = StanzaFilter::new(config.max_stanza_size_bytes);
 
-    let direct_tls = {
-        // sooo... I don't think peek here can be used for > 1 byte without this timer
-        // craziness... can it? this could be switched to only peek 1 byte and assume
-        // a leading 0x16 is TLS, it would *probably* be ok ?
-        //let mut p = [0u8; 3];
-        let p = &mut in_filter.buf[0..3];
-        // wait up to 10 seconds until 3 bytes have been read
-        use std::time::{Duration, Instant};
-        let duration = Duration::from_secs(10);
-        let now = Instant::now();
-        loop {
-            let n = stream.peek(p).await?;
-            if n == 3 {
-                break; // success
-            }
-            if n == 0 {
-                bail!("not enough bytes");
-            }
-            if Instant::now() - now > duration {
-                bail!("less than 3 bytes in 10 seconds, closed connection?");
-            }
-        }
-
-        /* TLS packet starts with a record "Hello" (0x16), followed by version
-         * (0x03 0x00-0x03) (RFC6101 A.1)
-         * This means we reject SSLv2 and lower, which is actually a good thing (RFC6176)
-         */
-        p[0] == 0x16 && p[1] == 0x03 && p[2] <= 0x03
-    };
+    /* TLS packet starts with a record "Hello" (0x16), followed by version
+     * (0x03 0x00-0x03) (RFC6101 A.1)
+     * This means we reject SSLv2 and lower, which is actually a good thing (RFC6176)
+     *
+     * could just check the leading 0x16 is TLS, it would *probably* be ok ?
+     */
+    let direct_tls = first_bytes_match(&stream, &mut in_filter.buf[0..3], |p| p[0] == 0x16 && p[1] == 0x03 && p[2] <= 0x03).await?;
 
     client_addr.set_proto(if direct_tls { "directtls-in" } else { "starttls-in" });
     info!("{} direct_tls sniffed", client_addr.log_from());
@@ -218,7 +196,7 @@ async fn handle_tls_connection(mut stream: tokio::net::TcpStream, client_addr: &
         };
 
         if websocket {
-            handle_websocket_connection(stream, config, server_certs, local_addr, client_addr, in_filter).await
+            handle_websocket_connection(Box::new(stream), config, server_certs, local_addr, client_addr, in_filter).await
         } else {
             let (in_rd, in_wr) = tokio::io::split(stream);
             shuffle_rd_wr_filter(StanzaRead::already_buffered(in_rd), StanzaWrite::new(in_wr), config, server_certs, local_addr, client_addr, in_filter).await
