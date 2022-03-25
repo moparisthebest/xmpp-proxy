@@ -15,8 +15,22 @@ fn ws_cfg(max_stanza_size_bytes: usize) -> Option<WebSocketConfig> {
     })
 }
 
+pub trait AsyncReadAndWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite {}
+
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite> AsyncReadAndWrite for T {}
+
+pub async fn incoming_websocket_connection(stream: Box<dyn AsyncReadAndWrite + Unpin + Send>, max_stanza_size_bytes: usize) -> Result<(StanzaRead, StanzaWrite)> {
+    // accept the websocket
+    // todo: check SEC_WEBSOCKET_PROTOCOL or ORIGIN ?
+    let stream = tokio_tungstenite::accept_async_with_config(stream, ws_cfg(max_stanza_size_bytes)).await?;
+
+    let (in_wr, in_rd) = stream.split();
+
+    Ok((StanzaRead::WebSocketRead(in_rd), StanzaWrite::WebSocketClientWrite(in_wr)))
+}
+
 pub async fn handle_websocket_connection(
-    stream: BufStream<tokio_rustls::TlsStream<tokio::net::TcpStream>>,
+    stream: Box<dyn AsyncReadAndWrite + Unpin + Send>,
     config: CloneableConfig,
     server_certs: ServerCerts,
     local_addr: SocketAddr,
@@ -26,22 +40,9 @@ pub async fn handle_websocket_connection(
     client_addr.set_proto("websocket-in");
     info!("{} connected", client_addr.log_from());
 
-    // accept the websocket
-    // todo: check SEC_WEBSOCKET_PROTOCOL or ORIGIN ?
-    let stream = tokio_tungstenite::accept_async_with_config(stream, ws_cfg(config.max_stanza_size_bytes)).await?;
+    let (in_rd, in_wr) = incoming_websocket_connection(stream, config.max_stanza_size_bytes).await?;
 
-    let (in_wr, in_rd) = stream.split();
-
-    shuffle_rd_wr_filter(
-        StanzaRead::WebSocketRead(in_rd),
-        StanzaWrite::WebSocketClientWrite(in_wr),
-        config,
-        server_certs,
-        local_addr,
-        client_addr,
-        in_filter,
-    )
-    .await
+    shuffle_rd_wr_filter(in_rd, in_wr, config, server_certs, local_addr, client_addr, in_filter).await
 }
 
 pub fn from_ws(stanza: String) -> String {
@@ -97,7 +98,6 @@ pub fn to_ws_new(buf: &[u8], mut end_of_first_tag: usize, is_c2s: bool) -> Resul
 
 use rustls::ServerName;
 use std::convert::TryFrom;
-use tokio::io::BufStream;
 
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::{ORIGIN, SEC_WEBSOCKET_PROTOCOL};
@@ -113,9 +113,10 @@ pub async fn websocket_connect(target: SocketAddr, server_name: &str, url: &Uri,
     let stream = tokio::net::TcpStream::connect(target).await?;
     let stream = config.connector.connect(dnsname, stream).await?;
 
-    let stream: tokio_rustls::TlsStream<tokio::net::TcpStream> = stream.into();
+    //let stream: tokio_rustls::TlsStream<tokio::net::TcpStream> = stream.into();
     // todo: tokio_tungstenite seems to have a bug, if the write buffer is non-zero, it'll hang forever, even though we always flush, investigate
-    let stream = BufStream::with_capacity(crate::IN_BUFFER_SIZE, 0, stream);
+    //let stream = BufStream::with_capacity(crate::IN_BUFFER_SIZE, 0, stream);
+    let stream: Box<dyn AsyncReadAndWrite + Unpin + Send> = Box::new(stream);
 
     let (stream, _) = tokio_tungstenite::client_async_with_config(request, stream, ws_cfg(config.max_stanza_size_bytes)).await?;
 

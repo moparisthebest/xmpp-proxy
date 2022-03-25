@@ -4,6 +4,7 @@ pub use stanzafilter::*;
 mod slicesubsequence;
 use slicesubsequence::*;
 
+use anyhow::bail;
 use std::net::SocketAddr;
 
 pub use log::{debug, error, info, log_enabled, trace};
@@ -19,6 +20,29 @@ pub fn c2s(is_c2s: bool) -> &'static str {
     } else {
         "s2s"
     }
+}
+
+pub async fn first_bytes_match(stream: &tokio::net::TcpStream, p: &mut [u8], matcher: fn(&[u8]) -> bool) -> anyhow::Result<bool> {
+    // sooo... I don't think peek here can be used for > 1 byte without this timer craziness... can it?
+    let len = p.len();
+    // wait up to 10 seconds until len bytes have been read
+    use std::time::{Duration, Instant};
+    let duration = Duration::from_secs(10);
+    let now = Instant::now();
+    loop {
+        let n = stream.peek(p).await?;
+        if n == len {
+            break; // success
+        }
+        if n == 0 {
+            bail!("not enough bytes");
+        }
+        if Instant::now() - now > duration {
+            bail!("less than {} bytes in 10 seconds, closed connection?", len);
+        }
+    }
+
+    Ok(matcher(p))
 }
 
 #[derive(Clone)]

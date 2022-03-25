@@ -3,7 +3,7 @@
 incoming_listen = [ "0.0.0.0:5222", "0.0.0.0:5269", "0.0.0.0:443" ]
 # interfaces to listen for reverse proxy QUIC XMPP connections on, should be open to the internet
 quic_listen = [ "0.0.0.0:443" ]
-# interfaces to listen for outgoing proxy TCP XMPP connections on, should be localhost
+# interfaces to listen for outgoing proxy TCP or WebSocket XMPP connections on, should be localhost
 outgoing_listen = [ "127.0.0.1:15270" ]
 
 # these ports shouldn't do any TLS, but should assume any connection from xmpp-proxy is secure

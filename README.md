@@ -18,7 +18,7 @@ xmpp-proxy in reverse proxy (incoming) mode will:
 
 xmpp-proxy in outgoing mode will:
   1. listen on any number of interfaces/ports
-  2. accept any plain-text TCP connection from a local XMPP server or client
+  2. accept any plain-text TCP or WebSocket connection from a local XMPP server or client
   3. look up the required SRV records
   4. connect to a real XMPP server across the internet over STARTTLS, Direct TLS, QUIC, or WebSocket
   5. fallback to next SRV target or defaults as required to fully connect
