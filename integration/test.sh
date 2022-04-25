@@ -13,8 +13,9 @@ build_args=''
 img='xmpp-proxy-test'
 xmpp_proxy_bind=''
 run_blocked=0
+rebuild_image=0
 ecdsa=0
-while getopts ":i:drben" o; do
+while getopts ":i:drbeno" o; do
     case "${o}" in
         i)
             ipv4=${OPTARG}
@@ -39,6 +40,9 @@ while getopts ":i:drben" o; do
         n)
             podman image rm -f "$img" "$img-dev" "$img-dev-ecdsa"
             exit $?
+            ;;
+        o)
+            rebuild_image=1
             ;;
         *)
             usage
@@ -137,7 +141,8 @@ set -euxo pipefail
 
 podman network exists xmpp-proxy-net4 && cleanup
 
-podman image exists "$img" || podman build -f Dockerfile --build-arg="ECDSA=$ecdsa" --build-arg="BUILD=$build" -t "$img" ..
+podman image exists "$img" || rebuild_image=1
+[ $rebuild_image -eq 0 ] || podman build -f Dockerfile --build-arg="ECDSA=$ecdsa" --build-arg="BUILD=$build" -t "$img" ..
 #podman run --rm "$img" openssl pkey -in /etc/prosody/certs/one.example.org.key -text
 
 if [ $build -eq 1 ]
