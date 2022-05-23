@@ -163,6 +163,7 @@ impl XmppConnection {
     ) -> Result<(StanzaWrite, StanzaRead, SocketAddr, &'static str)> {
         debug!("{} attempting connection to SRV: {:?}", client_addr.log_from(), self);
         // todo: for DNSSEC we need to optionally allow target in addition to domain, but what for SNI
+        let orig_domain = domain;
         let domain = if self.secure { &self.target } else { domain };
         //let ips = RESOLVER.lookup_ip(self.target.clone()).await?;
         let ips = if self.ips.is_empty() {
@@ -191,7 +192,17 @@ impl XmppConnection {
                 // todo: when websocket is found via DNS, we need to validate cert against domain, *not* target, this is a security problem with XEP-0156, we are doing it the secure but likely unexpected way here for now
                 XmppConnectionType::WebSocket(ref url, ref origin) => match crate::websocket_connect(to_addr, domain, url, origin, config.clone()).await {
                     Ok((wr, rd)) => return Ok((wr, rd, to_addr, "websocket-out")),
-                    Err(e) => error!("websocket connection failed to IP {} from TXT {}, error: {}", to_addr, url, e),
+                    Err(e) => {
+                        if self.secure && self.target != orig_domain {
+                            // https is a special case, as target is sent in the Host: header, so we have to literally try twice in case this is set for the other on the server
+                            match crate::websocket_connect(to_addr, orig_domain, url, origin, config.clone()).await {
+                                Ok((wr, rd)) => return Ok((wr, rd, to_addr, "websocket-out")),
+                                Err(e2) => error!("websocket connection failed to IP {} from TXT {}, error try 1: {}, error try 2: {}", to_addr, url, e, e2),
+                            }
+                        } else {
+                            error!("websocket connection failed to IP {} from TXT {}, error: {}", to_addr, url, e)
+                        }
+                    }
                 },
             }
         }
