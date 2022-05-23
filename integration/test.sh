@@ -121,15 +121,19 @@ run_test() {
     # start the prosody servers if required
     [ -f ./prosody1.cfg.lua ] && run_container "$network_name" $num -d -v ./prosody1.cfg.lua:/etc/prosody/prosody.cfg.lua:ro 20 server1 prosody && podman exec $num-server1 prosodyctl register romeo  one.example.org pass && podman exec $num-server1 prosodyctl register juliet two.example.org pass
     [ -f ./prosody2.cfg.lua ] && run_container "$network_name" $num -d -v ./prosody2.cfg.lua:/etc/prosody/prosody.cfg.lua:ro 30 server2 prosody && podman exec $num-server2 prosodyctl register juliet two.example.org pass
-    # or the ejabberd servers todo: ejabberd register fails if server isn't started first, do something to avoid this hacky sleep
-    [ -f ./ejabberd1.yml ] && run_container "$network_name" $num -d -v ./ejabberd1.yml:/etc/ejabberd/ejabberd.yml:ro 20 server1 /usr/bin/ejabberdctl foreground && sleep 0.8 && podman exec $num-server1 ejabberdctl register romeo  one.example.org pass && podman exec $num-server1 ejabberdctl register juliet two.example.org pass
-    [ -f ./ejabberd2.yml ] && run_container "$network_name" $num -d -v ./ejabberd2.yml:/etc/ejabberd/ejabberd.yml:ro 30 server2 /usr/bin/ejabberdctl foreground && sleep 0.8 && podman exec $num-server2 ejabberdctl register juliet two.example.org pass
+    # or the ejabberd servers
+    [ -f ./ejabberd1.yml ] && run_container "$network_name" $num -d -v ./ejabberd1.yml:/etc/ejabberd/ejabberd.yml:ro 20 server1 /usr/bin/ejabberdctl foreground
+    [ -f ./ejabberd2.yml ] && run_container "$network_name" $num -d -v ./ejabberd2.yml:/etc/ejabberd/ejabberd.yml:ro 30 server2 /usr/bin/ejabberdctl foreground
 
     [ -f ./xmpp-proxy1.toml ] && run_container "$network_name" $num -d $xmpp_proxy_bind -v ./xmpp-proxy1.toml:/etc/xmpp-proxy/xmpp-proxy.toml:ro 40 xp1 xmpp-proxy
     [ -f ./xmpp-proxy2.toml ] && run_container "$network_name" $num -d $xmpp_proxy_bind -v ./xmpp-proxy2.toml:/etc/xmpp-proxy/xmpp-proxy.toml:ro 50 xp2 xmpp-proxy
     [ -f ./xmpp-proxy3.toml ] && run_container "$network_name" $num -d $xmpp_proxy_bind -v ./xmpp-proxy3.toml:/etc/xmpp-proxy/xmpp-proxy.toml:ro 60 xp3 xmpp-proxy
     [ -f ./nginx1.conf ] && run_container "$network_name" $num -d -v ./nginx1.conf:/etc/nginx/nginx.conf:ro 70 web1 nginx
     [ -f ./nginx2.conf ] && run_container "$network_name" $num -d -v ./nginx2.conf:/etc/nginx/nginx.conf:ro 80 web2 nginx
+
+    # can't register ejabberd user until it finishes starting up, hopefully that's done by now
+    [ -f ./ejabberd1.yml ] && podman exec $num-server1 ejabberdctl started && podman exec $num-server1 ejabberdctl register romeo  one.example.org pass && podman exec $num-server1 ejabberdctl register juliet two.example.org pass
+    [ -f ./ejabberd2.yml ] && podman exec $num-server2 ejabberdctl started && podman exec $num-server2 ejabberdctl register juliet two.example.org pass
 
     # run the actual tests
     tests="$(cat tests || echo "-d .")"
