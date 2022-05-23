@@ -15,7 +15,8 @@ xmpp_proxy_bind=''
 run_blocked=0
 rebuild_image=0
 ecdsa=0
-threads=1
+# if we have access to nproc, divide that by 2, otherwise use 1 thread by default
+threads=$(($(nproc || echo 2) / 2))
 while getopts ":it:drbeno" o; do
     case "${o}" in
         i)
