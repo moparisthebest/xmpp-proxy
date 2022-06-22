@@ -29,7 +29,7 @@ anyhow = "1.0"
 tokio = { version = "1.9", features = ["net", "rt", "rt-multi-thread", "macros", "io-util", "signal"] }
 ring = "0.16"
 data-encoding = "2.3"
-untrusted = "0.7"
+
 
 # logging deps
 log = "0.4"
@@ -41,8 +41,8 @@ tokio-rustls = { version = "0.23", optional = true }
 
 # outgoing deps
 lazy_static = { version = "1.4", optional = true }
-trust-dns-resolver = { version = "0.20", optional = true }
-#trust-dns-resolver = { version = "0.20", features = ["dns-over-rustls"], optional = true }
+trust-dns-resolver = { version = "0.21", optional = true }
+#trust-dns-resolver = { version = "0.21", features = ["dns-over-rustls"], optional = true }
 # todo: feature to swap between webpki-roots and rustls-native-certs
 webpki-roots = { version = "0.22", optional = true }
 rustls-native-certs = { version = "0.6", optional = true }
@@ -53,11 +53,11 @@ quinn = { version = "0.8", optional = true }
 
 # shared deps needed by quic and incoming
 rustls = { version = "0.20.2", optional = true }
-rustls-pemfile = { version = "0.2.1", optional = true }
+rustls-pemfile = { version = "1.0.0", optional = true }
 
 # websocket deps
-#tokio-tungstenite = { version = "0.16", optional = true, features = ["rustls-tls-webpki-roots"] }
-tokio-tungstenite = { version = "0.16", optional = true, features = ["rustls-tls-native-roots"] }
+#tokio-tungstenite = { version = "0.17", optional = true, features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.17", optional = true, features = ["rustls-tls-native-roots"] }
 futures-util = { version = "0.3", default-features = false, features = ["async-await", "sink", "std"], optional = true }
 
 [features]
