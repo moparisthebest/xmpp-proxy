@@ -1,4 +1,12 @@
-# xmpp-proxy
+
+<h1 align="center">
+  <br>
+  <img src="https://code.moparisthebest.com/moparisthebest/xmpp-proxy/raw/branch/logo/contrib/logo/xmpp_proxy_color.svg" alt="logo" width="200">
+  <br>
+  xmpp-proxy
+  <br>
+  <br>
+</h1>
 
 [![Build Status](https://ci.moparisthe.best/job/moparisthebest/job/xmpp-proxy/job/master/badge/icon%3Fstyle=plastic)](https://ci.moparisthe.best/job/moparisthebest/job/xmpp-proxy/job/master/)
 
