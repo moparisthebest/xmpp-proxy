@@ -19,9 +19,11 @@ use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
 #[cfg(feature = "rustls")]
-use rustls::{Certificate, ClientConfig, PrivateKey, ServerConfig};
-#[cfg(feature = "rustls-pemfile")]
-use rustls_pemfile::{certs, pkcs8_private_keys};
+use rustls::{
+    sign::{CertifiedKey, RsaSigningKey, SigningKey},
+    Certificate, ClientConfig, PrivateKey, ServerConfig, SignatureScheme,
+};
+
 #[cfg(feature = "tokio-rustls")]
 use tokio_rustls::{
     webpki::{DnsNameRef, TlsServerTrustAnchors, TrustAnchor},
@@ -29,8 +31,6 @@ use tokio_rustls::{
 };
 
 use anyhow::{anyhow, bail, Result};
-use rustls::sign::CertifiedKey;
-use rustls::SignatureScheme;
 
 mod slicesubsequence;
 use slicesubsequence::*;
@@ -214,21 +214,26 @@ impl Config {
         }
     }
 
-    #[cfg(any(feature = "outgoing", feature = "incoming"))]
+    #[cfg(feature = "rustls-pemfile")]
     fn certs_key(&self) -> Result<rustls::sign::CertifiedKey> {
-        let mut tls_key: Vec<PrivateKey> = pkcs8_private_keys(&mut BufReader::new(File::open(&self.tls_key)?))
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))
-            .map(|mut keys| keys.drain(..).map(PrivateKey).collect())?;
-        if tls_key.is_empty() {
-            bail!("invalid key");
-        }
-        let tls_key = tls_key.remove(0);
+        use rustls_pemfile::{certs, read_all, Item};
+
+        let tls_key = read_all(&mut BufReader::new(File::open(&self.tls_key)?))
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))?
+            .into_iter()
+            .flat_map(|item| match item {
+                Item::RSAKey(der) => RsaSigningKey::new(&PrivateKey(der)).ok().map(Arc::new).map(|r| r as Arc<dyn SigningKey>),
+                Item::PKCS8Key(der) => rustls::sign::any_supported_type(&PrivateKey(der)).ok(),
+                Item::ECKey(der) => rustls::sign::any_supported_type(&PrivateKey(der)).ok(),
+                _ => None,
+            })
+            .next()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))?;
 
         let tls_certs = certs(&mut BufReader::new(File::open(&self.tls_cert)?))
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid cert"))
             .map(|mut certs| certs.drain(..).map(Certificate).collect())?;
 
-        let tls_key = rustls::sign::any_supported_type(&tls_key)?;
         Ok(rustls::sign::CertifiedKey::new(tls_certs, tls_key))
     }
 
