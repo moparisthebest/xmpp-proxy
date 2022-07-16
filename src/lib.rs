@@ -8,6 +8,8 @@ use anyhow::bail;
 use std::net::SocketAddr;
 
 pub use log::{debug, error, info, log_enabled, trace};
+
+#[cfg(feature = "s2s-incoming")]
 use rustls::{Certificate, ServerConnection};
 
 pub fn to_str(buf: &[u8]) -> std::borrow::Cow<'_, str> {
@@ -152,7 +154,10 @@ impl<'a> Context<'a> {
     }
 }
 
-#[cfg(feature = "incoming")]
+#[cfg(not(feature = "s2s-incoming"))]
+pub type ServerCerts = ();
+
+#[cfg(feature = "s2s-incoming")]
 #[derive(Clone)]
 pub enum ServerCerts {
     Tls(&'static ServerConnection),
@@ -160,10 +165,12 @@ pub enum ServerCerts {
     Quic(quinn::Connection),
 }
 
+#[cfg(feature = "s2s-incoming")]
 impl ServerCerts {
     pub fn peer_certificates(&self) -> Option<Vec<Certificate>> {
         match self {
             ServerCerts::Tls(c) => c.peer_certificates().map(|c| c.to_vec()),
+            #[cfg(feature = "quic")]
             ServerCerts::Quic(c) => c.peer_identity().and_then(|v| v.downcast::<Vec<Certificate>>().ok()).map(|v| v.to_vec()),
         }
     }
@@ -171,6 +178,7 @@ impl ServerCerts {
     pub fn sni(&self) -> Option<String> {
         match self {
             ServerCerts::Tls(c) => c.sni_hostname().map(|s| s.to_string()),
+            #[cfg(feature = "quic")]
             ServerCerts::Quic(c) => c.handshake_data().and_then(|v| v.downcast::<quinn::crypto::rustls::HandshakeData>().ok()).and_then(|h| h.server_name),
         }
     }
@@ -178,6 +186,7 @@ impl ServerCerts {
     pub fn alpn(&self) -> Option<Vec<u8>> {
         match self {
             ServerCerts::Tls(c) => c.alpn_protocol().map(|s| s.to_vec()),
+            #[cfg(feature = "quic")]
             ServerCerts::Quic(c) => c.handshake_data().and_then(|v| v.downcast::<quinn::crypto::rustls::HandshakeData>().ok()).and_then(|h| h.protocol),
         }
     }
@@ -185,6 +194,7 @@ impl ServerCerts {
     pub fn is_tls(&self) -> bool {
         match self {
             ServerCerts::Tls(_) => true,
+            #[cfg(feature = "quic")]
             ServerCerts::Quic(_) => false,
         }
     }

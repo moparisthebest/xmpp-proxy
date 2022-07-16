@@ -3,8 +3,7 @@ use rustls::ServerConnection;
 use std::convert::TryFrom;
 use tokio::io::{AsyncBufReadExt, BufStream};
 
-#[cfg(any(feature = "incoming", feature = "outgoing"))]
-use tokio_rustls::rustls::ServerName;
+use tokio_rustls::{rustls::ServerName, TlsAcceptor};
 
 #[cfg(feature = "outgoing")]
 pub async fn tls_connect(target: SocketAddr, server_name: &str, config: OutgoingVerifierConfig) -> Result<(StanzaWrite, StanzaRead)> {
@@ -57,6 +56,13 @@ pub async fn starttls_connect(target: SocketAddr, server_name: &str, stream_open
     let stream = config.connector.connect(dnsname, stream).await?;
     let (rd, wrt) = tokio::io::split(stream);
     Ok((StanzaWrite::new(wrt), StanzaRead::new(rd)))
+}
+
+#[cfg(feature = "incoming")]
+impl Config {
+    pub fn tls_acceptor(&self, cert_key: Arc<CertsKey>) -> Result<TlsAcceptor> {
+        Ok(TlsAcceptor::from(Arc::new(self.server_config(cert_key)?)))
+    }
 }
 
 #[cfg(feature = "incoming")]
@@ -159,8 +165,13 @@ async fn handle_tls_connection(mut stream: tokio::net::TcpStream, client_addr: &
     // where we read the first stanza, where we are guaranteed the handshake is complete, but I can't
     // do that without ignoring the lifetime and just pulling a C programmer and pinky promising to be
     // *very careful* that this reference doesn't outlive stream...
-    let server_connection: &'static ServerConnection = unsafe { std::mem::transmute(server_connection) };
-    let server_certs = ServerCerts::Tls(server_connection);
+    #[cfg(feature = "s2s-incoming")]
+    let server_certs = {
+        let server_connection: &'static ServerConnection = unsafe { std::mem::transmute(server_connection) };
+        ServerCerts::Tls(server_connection)
+    };
+    #[cfg(not(feature = "s2s-incoming"))]
+    let server_certs = ();
 
     #[cfg(not(feature = "websocket"))]
     {

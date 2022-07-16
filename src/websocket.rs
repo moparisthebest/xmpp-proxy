@@ -29,6 +29,7 @@ pub async fn incoming_websocket_connection(stream: Box<dyn AsyncReadAndWrite + U
     Ok((StanzaRead::WebSocketRead(in_rd), StanzaWrite::WebSocketClientWrite(in_wr)))
 }
 
+#[cfg(feature = "incoming")]
 pub async fn handle_websocket_connection(
     stream: Box<dyn AsyncReadAndWrite + Unpin + Send>,
     config: CloneableConfig,

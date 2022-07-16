@@ -44,7 +44,12 @@ pub fn spawn_quic_listener(local_addr: SocketAddr, config: CloneableConfig, serv
             tokio::spawn(async move {
                 if let Ok(mut new_conn) = incoming_conn.await {
                     let client_addr = crate::Context::new("quic-in", new_conn.connection.remote_address());
+
+                    #[cfg(feature = "s2s-incoming")]
                     let server_certs = ServerCerts::Quic(new_conn.connection);
+                    #[cfg(not(feature = "s2s-incoming"))]
+                    let server_certs = ();
+
                     info!("{} connected new connection", client_addr.log_from());
 
                     while let Some(Ok((wrt, rd))) = new_conn.bi_streams.next().await {
