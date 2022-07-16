@@ -29,8 +29,10 @@ fn make_resolver() -> TokioAsyncResolver {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum XmppConnectionType {
+enum XmppConnectionType {
+    #[cfg(feature = "tls")]
     StartTLS,
+    #[cfg(feature = "tls")]
     DirectTLS,
     #[cfg(feature = "quic")]
     QUIC,
@@ -41,9 +43,13 @@ pub enum XmppConnectionType {
 impl XmppConnectionType {
     fn idx(&self) -> u8 {
         match self {
+            #[cfg(feature = "quic")]
             XmppConnectionType::QUIC => 0,
+            #[cfg(feature = "tls")]
             XmppConnectionType::DirectTLS => 1,
+            #[cfg(feature = "tls")]
             XmppConnectionType::StartTLS => 2,
+            #[cfg(feature = "websocket")]
             XmppConnectionType::WebSocket(_, _) => 3,
         }
     }
@@ -57,6 +63,7 @@ impl Ord for XmppConnectionType {
         }
         // so they are the same type, but WebSocket is a special case...
         match (self, other) {
+            #[cfg(feature = "websocket")]
             (XmppConnectionType::WebSocket(self_uri, self_origin), XmppConnectionType::WebSocket(other_uri, other_origin)) => {
                 let cmp = self_uri.to_string().cmp(&other_uri.to_string());
                 if cmp != Ordering::Equal {
@@ -153,6 +160,7 @@ fn sort_dedup(ret: &mut Vec<XmppConnection>) {
 }
 
 impl XmppConnection {
+    #[cfg(feature = "outgoing")]
     pub async fn connect(
         &self,
         domain: &str,
@@ -175,10 +183,12 @@ impl XmppConnection {
             let to_addr = SocketAddr::new(*ip, self.port);
             debug!("{} trying ip {}", client_addr.log_from(), to_addr);
             match self.conn_type {
+                #[cfg(feature = "tls")]
                 XmppConnectionType::StartTLS => match crate::starttls_connect(to_addr, domain, stream_open, in_filter, config.clone()).await {
                     Ok((wr, rd)) => return Ok((wr, rd, to_addr, "starttls-out")),
                     Err(e) => error!("starttls connection failed to IP {} from SRV {}, error: {}", to_addr, self.target, e),
                 },
+                #[cfg(feature = "tls")]
                 XmppConnectionType::DirectTLS => match crate::tls_connect(to_addr, domain, config.clone()).await {
                     Ok((wr, rd)) => return Ok((wr, rd, to_addr, "directtls-out")),
                     Err(e) => error!("direct tls connection failed to IP {} from SRV {}, error: {}", to_addr, self.target, e),
@@ -336,7 +346,9 @@ pub async fn get_xmpp_connections(domain: &str, is_c2s: bool) -> Result<(Vec<Xmp
         // ignore everything else if new host-meta format
         #[cfg(feature = "websocket")]
         collect_txts(&mut ret, websocket_txt, is_c2s);
+        #[cfg(feature = "tls")]
         collect_srvs(&mut ret, starttls, XmppConnectionType::StartTLS);
+        #[cfg(feature = "tls")]
         collect_srvs(&mut ret, direct_tls, XmppConnectionType::DirectTLS);
         #[cfg(feature = "quic")]
         collect_srvs(&mut ret, quic, XmppConnectionType::QUIC);
@@ -358,6 +370,7 @@ pub async fn get_xmpp_connections(domain: &str, is_c2s: bool) -> Result<(Vec<Xmp
 
     if ret.is_empty() {
         // default starttls ports
+        #[cfg(feature = "tls")]
         ret.push(XmppConnection {
             priority: 0,
             weight: 0,
@@ -369,6 +382,7 @@ pub async fn get_xmpp_connections(domain: &str, is_c2s: bool) -> Result<(Vec<Xmp
             ech: None,
         });
         // by spec there are no default direct/quic ports, but we are going 443
+        #[cfg(feature = "tls")]
         ret.push(XmppConnection {
             priority: 0,
             weight: 0,
@@ -409,6 +423,7 @@ pub async fn get_xmpp_connections(domain: &str, is_c2s: bool) -> Result<(Vec<Xmp
     Ok((ret, cert_verifier))
 }
 
+#[cfg(feature = "outgoing")]
 pub async fn srv_connect(
     domain: &str,
     is_c2s: bool,
@@ -417,6 +432,14 @@ pub async fn srv_connect(
     client_addr: &mut Context<'_>,
     config: OutgoingConfig,
 ) -> Result<(StanzaWrite, StanzaRead, Vec<u8>)> {
+    #[cfg(not(feature = "c2s-outgoing"))]
+    if is_c2s {
+        bail!("outgoing c2s connection but c2s-outgoing disabled at compile-time");
+    }
+    #[cfg(not(feature = "s2s-outgoing"))]
+    if !is_c2s {
+        bail!("outgoing s2s connection but s2s-outgoing disabled at compile-time");
+    }
     let (srvs, cert_verifier) = get_xmpp_connections(domain, is_c2s).await?;
     let config = config.with_custom_certificate_verifier(is_c2s, cert_verifier);
     for srv in srvs {
@@ -448,7 +471,7 @@ pub async fn srv_connect(
 
 #[cfg(not(feature = "websocket"))]
 async fn collect_host_meta(ret: &mut Vec<XmppConnection>, sha256_pinnedpubkeys: &mut Vec<String>, domain: &str, is_c2s: bool) -> Result<Option<u16>> {
-    collect_host_meta_json(ret, sha256_pinnedpubkeys, domain, is_c2s)
+    collect_host_meta_json(ret, sha256_pinnedpubkeys, domain, is_c2s).await
 }
 
 #[cfg(feature = "websocket")]
@@ -532,7 +555,7 @@ struct LinkCommon {
 }
 
 impl LinkCommon {
-    pub fn into_xmpp_connection(self, conn_type: XmppConnectionType, port: u16) -> Option<XmppConnection> {
+    fn into_xmpp_connection(self, conn_type: XmppConnectionType, port: u16) -> Option<XmppConnection> {
         if self.ips.is_empty() {
             error!("invalid empty ips");
             return None;
@@ -551,13 +574,18 @@ impl LinkCommon {
 }
 
 impl Link {
-    pub fn into_xmpp_connection(self, is_c2s: bool) -> Option<XmppConnection> {
+    fn into_xmpp_connection(self, is_c2s: bool) -> Option<XmppConnection> {
         use XmppConnectionType::*;
         let (srv_is_c2s, port, link, conn_type) = match self {
+            #[cfg(feature = "tls")]
             Link::DirectTLS { port, link } => (true, port, link, DirectTLS),
+            #[cfg(feature = "quic")]
             Link::Quic { port, link } => (true, port, link, QUIC),
+            #[cfg(feature = "tls")]
             Link::S2SDirectTLS { port, link } => (false, port, link, DirectTLS),
+            #[cfg(feature = "quic")]
             Link::S2SQuic { port, link } => (false, port, link, QUIC),
+            #[cfg(feature = "websocket")]
             Link::WebSocket { href, link } => {
                 return if is_c2s {
                     let srv = wss_to_srv(&href, true)?;
@@ -570,6 +598,7 @@ impl Link {
                     None
                 };
             }
+            #[cfg(feature = "websocket")]
             Link::S2SWebSocket { href, link } => {
                 return if !is_c2s {
                     let srv = wss_to_srv(&href, true)?;
@@ -579,7 +608,7 @@ impl Link {
                 };
             }
 
-            Link::Unknown => return None,
+            _ => return None,
         };
 
         if srv_is_c2s == is_c2s {
@@ -591,7 +620,7 @@ impl Link {
 }
 
 impl HostMeta {
-    pub fn collect(self, ret: &mut Vec<XmppConnection>, sha256_pinnedpubkeys: &mut Vec<String>, is_c2s: bool) -> Option<u16> {
+    fn collect(self, ret: &mut Vec<XmppConnection>, sha256_pinnedpubkeys: &mut Vec<String>, is_c2s: bool) -> Option<u16> {
         for link in self.links {
             if let Some(srv) = link.into_xmpp_connection(is_c2s) {
                 ret.push(srv);
@@ -666,7 +695,7 @@ async fn collect_host_meta_xml(ret: &mut Vec<XmppConnection>, domain: &str, is_c
     }
 }
 
-pub async fn https_get<T: reqwest::IntoUrl>(url: T) -> reqwest::Result<reqwest::Response> {
+async fn https_get<T: reqwest::IntoUrl>(url: T) -> reqwest::Result<reqwest::Response> {
     // todo: resolve URL with our resolver
     reqwest::Client::builder().https_only(true).build()?.get(url).send().await
 }

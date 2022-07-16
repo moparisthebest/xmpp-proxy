@@ -131,15 +131,38 @@ s2s_ports = {15268}
 If you are a grumpy power user who wants to build xmpp-proxy with exactly the features you want, nothing less, nothing
 more, this section is for you!
 
-xmpp-proxy has 5 compile-time features:
-  1. `incoming` - enables `incoming_listen` config option for reverse proxy STARTTLS/TLS
-  2. `outgoing` - enables `outgoing_listen` config option for outgoing proxy STARTTLS/TLS
-  3. `quic` - enables `quic_listen` config option for reverse proxy QUIC, and QUIC support for `outgoing` if it is enabled
-  4. `websocket` - enables reverse proxy WebSocket on `incoming_listen`, and WebSocket support for `outgoing` if it is enabled
-  5. `logging` - enables configurable logging
+xmpp-proxy has multiple compile-time features, some of which are required, they are grouped as such:
 
-So to build only supporting reverse proxy STARTTLS/TLS, no QUIC, run: `cargo build --release --no-default-features --features incoming`
-To build a reverse proxy only, but supporting all of STARTTLS/TLS/QUIC, run: `cargo build --release --no-default-features --features incoming,quic`
+choose between 1-4 directions:
+  1. `c2s-incoming` - enables a server to accept incoming c2s connections
+  2. `c2s-outgoing` - enables a client to make outgoing c2s connections
+  3. `s2s-incoming` - enables a server to accept incoming s2s connections
+  4. `s2s-outgoing` - enables a server to make outgoing s2s connections
+
+choose between 1-3 transport protocols:
+  1. `tls` - enables STARTTLS/TLS support
+  2. `quic` - enables QUIC support
+  3. `websocket` - enables WebSocket support, also enables TLS incoming support if the appropriate directions are enabled
+
+choose exactly 1 of these methods to get trusted CA roots, not needed if only `c2s-incoming` is enabled:
+  1. `tls-ca-roots-native` - reads CA roots from operating system
+  2. `tls-ca-roots-bundled` - bundles CA roots into the binary from the `webpki-roots` project
+
+choose any of these optional features:
+  1. `logging` - enables configurable logging
+
+So to build only supporting reverse proxy STARTTLS/TLS, no QUIC, run: `cargo build --release --no-default-features --features c2s-incoming,s2s-incoming,tls`
+To build a reverse proxy only, but supporting all of STARTTLS/TLS/QUIC, run: `cargo build --release --no-default-features --features c2s-incoming,s2s-incoming,tls,quic`
+
+#### Development
+
+1. `check-all-features.sh` is used to check compilation with all supported feature permutations
+2. `integration/test.sh` uses [Rootless podman](https://wiki.archlinux.org/title/Podman#Rootless_Podman) to run many tests
+    through xmpp-proxy on a real network with real dns, web, and xmpp servers, all of these should pass before pushing commits,
+    and write new tests to cover new functionality.
+3. To submit code changes submit a PR on [github](https://github.com/moparisthebest/xmpp-proxy) or
+   [code.moparisthebest.com](https://code.moparisthebest.com/moparisthebest/xmpp-proxy) or send me a patch via email,
+   XMPP, fediverse, or carrier pigeon.
 
 ####  License
 GNU/AGPLv3 - Check LICENSE.md for details

@@ -1,8 +1,8 @@
 // Box<dyn AsyncWrite + Unpin + Send>, Box<dyn AsyncRead + Unpin + Send>
 
 #[cfg(feature = "websocket")]
-use crate::{from_ws, to_ws_new};
-use crate::{slicesubsequence::SliceSubsequence, trace, AsyncReadAndWrite, StanzaFilter, StanzaRead::*, StanzaReader, StanzaWrite::*};
+use crate::{from_ws, to_ws_new, AsyncReadAndWrite};
+use crate::{slicesubsequence::SliceSubsequence, trace, StanzaFilter, StanzaRead::*, StanzaReader, StanzaWrite::*};
 use anyhow::{bail, Result};
 #[cfg(feature = "websocket")]
 use futures_util::{
