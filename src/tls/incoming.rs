@@ -1,4 +1,5 @@
 use crate::common::incoming::{shuffle_rd_wr_filter, CloneableConfig, ServerCerts};
+use std::net::SocketAddr;
 
 use crate::{
     common::{first_bytes_match, to_str, IN_BUFFER_SIZE},
@@ -6,11 +7,10 @@ use crate::{
     in_out::{StanzaRead, StanzaWrite},
     slicesubsequence::SliceSubsequence,
     stanzafilter::{StanzaFilter, StanzaReader},
-    *,
 };
-use anyhow::Result;
+use anyhow::{bail, Result};
 use die::Die;
-use log::{error, trace};
+use log::{error, info, trace};
 use rustls::{ServerConfig, ServerConnection};
 
 use std::sync::Arc;
