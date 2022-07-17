@@ -1,7 +1,7 @@
 
 <h1 align="center">
   <br>
-  <img src="https://code.moparisthebest.com/moparisthebest/xmpp-proxy/raw/branch/logo/contrib/logo/xmpp_proxy_color.svg" alt="logo" width="200">
+  <img src="https://raw.githubusercontent.com/moparisthebest/xmpp-proxy/master/contrib/logo/xmpp_proxy_color.png" alt="logo" width="200">
   <br>
   xmpp-proxy
   <br>
@@ -10,24 +10,22 @@
 
 [![Build Status](https://ci.moparisthe.best/job/moparisthebest/job/xmpp-proxy/job/master/badge/icon%3Fstyle=plastic)](https://ci.moparisthe.best/job/moparisthebest/job/xmpp-proxy/job/master/)
 
-xmpp-proxy is a reverse proxy and outgoing proxy for XMPP servers and clients, providing STARTTLS, 
-[Direct TLS](https://xmpp.org/extensions/xep-0368.html), [QUIC](https://datatracker.ietf.org/doc/html/draft-ietf-quic-transport),
-and [WebSocket](https://datatracker.ietf.org/doc/html/rfc7395) connectivity to plain-text XMPP servers and clients and
-limiting stanza sizes without an XML parser.
+xmpp-proxy is a reverse proxy and outgoing proxy for XMPP servers and clients, providing [STARTTLS], [Direct TLS], [QUIC],
+[WebSocket C2S], and [WebSocket S2S] connectivity to plain-text XMPP servers and clients and limiting stanza sizes without an XML parser.
 
 xmpp-proxy in reverse proxy (incoming) mode will:
   1. listen on any number of interfaces/ports
   2. accept any STARTTLS, Direct TLS, QUIC, or WebSocket c2s or s2s connections from the internet
   3. terminate TLS
-  4. connect them to a local real XMPP server over plain-text TCP
-  5. send the [PROXY protocol](https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt) v1 header if configured, so the
-  XMPP server knows the real client IP
-  6. limit incoming stanza sizes as configured
+  4. for s2s require a client cert and validate it correctly (using CAs, host-meta, host-meta2, and POSH) for SASL EXTERNAL auth
+  5. connect them to a local real XMPP server over plain-text TCP
+  6. send the [PROXY protocol] v1 header if configured, so the XMPP server knows the real client IP
+  7. limit incoming stanza sizes as configured
 
 xmpp-proxy in outgoing mode will:
   1. listen on any number of interfaces/ports
   2. accept any plain-text TCP or WebSocket connection from a local XMPP server or client
-  3. look up the required SRV records
+  3. look up the required SRV, [host-meta], host-meta2, and [POSH] records
   4. connect to a real XMPP server across the internet over STARTTLS, Direct TLS, QUIC, or WebSocket
   5. fallback to next SRV target or defaults as required to fully connect
   6. perform all the proper required certificate validation logic
@@ -169,5 +167,16 @@ GNU/AGPLv3 - Check LICENSE.md for details
 
 Thanks [rxml](https://github.com/horazont/rxml) for afl-fuzz seeds
 
-#### todo
-  1. XEP for XMPP-over-QUIC and XMPP-S2S-over-WebSocket
+#### Todo
+  1. write "host-meta2" XEP for QUIC and WebSocket S2S Discovery
+  2. optional [systemd](https://www.freedesktop.org/software/systemd/man/sd_listen_fds.html) [integration](https://mgdm.net/weblog/systemd/)
+  3. seamless Tor integration, connecting to and from .onion domains
+
+[STARTTLS]: https://datatracker.ietf.org/doc/html/rfc6120#section-5
+[Direct TLS]: https://xmpp.org/extensions/xep-0368.html
+[QUIC]: https://xmpp.org/extensions/xep-0467.html
+[WebSocket C2S]: https://datatracker.ietf.org/doc/html/rfc7395
+[WebSocket S2S]: https://xmpp.org/extensions/xep-0468.html
+[POSH]: https://datatracker.ietf.org/doc/html/rfc7711
+[host-meta]: https://xmpp.org/extensions/xep-0156.html
+[PROXY protocol]: https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt
