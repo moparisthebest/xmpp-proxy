@@ -1,7 +1,5 @@
-// Box<dyn AsyncWrite + Unpin + Send>, Box<dyn AsyncRead + Unpin + Send>
-
 #[cfg(feature = "websocket")]
-use crate::websocket::{from_ws, to_ws_new, AsyncReadAndWrite};
+use crate::websocket::{from_ws, to_ws_new, WsRd, WsWr};
 use crate::{
     common::IN_BUFFER_SIZE,
     in_out::{StanzaRead::*, StanzaWrite::*},
@@ -10,19 +8,11 @@ use crate::{
 };
 use anyhow::{bail, Result};
 #[cfg(feature = "websocket")]
-use futures_util::{
-    stream::{SplitSink, SplitStream},
-    SinkExt, TryStreamExt,
-};
+use futures_util::{SinkExt, TryStreamExt};
 use log::trace;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 #[cfg(feature = "websocket")]
-use tokio_tungstenite::{tungstenite::Message::*, WebSocketStream};
-
-#[cfg(feature = "websocket")]
-type WsWr = SplitSink<WebSocketStream<Box<dyn AsyncReadAndWrite + Unpin + Send>>, tokio_tungstenite::tungstenite::Message>;
-#[cfg(feature = "websocket")]
-type WsRd = SplitStream<WebSocketStream<Box<dyn AsyncReadAndWrite + Unpin + Send>>>;
+use tokio_tungstenite::tungstenite::Message::{Close, Ping, Pong, Text};
 
 pub enum StanzaWrite {
     AsyncWrite(Box<dyn AsyncWrite + Unpin + Send>),

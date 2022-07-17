@@ -1,13 +1,16 @@
 use anyhow::Result;
 use futures::StreamExt;
-
-use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+use futures_util::stream::{SplitSink, SplitStream};
+use tokio_tungstenite::{tungstenite::protocol::WebSocketConfig, WebSocketStream};
 
 #[cfg(feature = "incoming")]
 pub mod incoming;
 
 #[cfg(feature = "outgoing")]
 pub mod outgoing;
+
+pub type WsWr = SplitSink<WebSocketStream<Box<dyn AsyncReadAndWrite + Unpin + Send>>, tokio_tungstenite::tungstenite::Message>;
+pub type WsRd = SplitStream<WebSocketStream<Box<dyn AsyncReadAndWrite + Unpin + Send>>>;
 
 // https://datatracker.ietf.org/doc/html/rfc7395
 
