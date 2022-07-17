@@ -13,6 +13,7 @@ use crate::{
 use anyhow::{bail, Result};
 use data_encoding::BASE64;
 use log::{debug, error, trace};
+use reqwest::Client;
 use ring::digest::{Algorithm, Context as DigestContext, SHA256, SHA512};
 use serde::Deserialize;
 use std::{
@@ -31,12 +32,22 @@ use trust_dns_resolver::{
 
 lazy_static::lazy_static! {
     static ref RESOLVER: TokioAsyncResolver = make_resolver();
+    static ref HTTPS_CLIENT: Client = make_https_client();
 }
 
 fn make_resolver() -> TokioAsyncResolver {
     let (config, mut options) = trust_dns_resolver::system_conf::read_system_conf().unwrap();
     options.ip_strategy = trust_dns_resolver::config::LookupIpStrategy::Ipv4AndIpv6;
     TokioAsyncResolver::tokio(config, options).unwrap()
+}
+
+fn make_https_client() -> Client {
+    // todo: configure our root certs here
+    Client::builder().https_only(true).build().expect("failed to make https client?")
+}
+
+async fn https_get<T: reqwest::IntoUrl>(url: T) -> reqwest::Result<reqwest::Response> {
+    HTTPS_CLIENT.get(url).send().await
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -704,11 +715,6 @@ async fn collect_host_meta_xml(ret: &mut Vec<XmppConnection>, domain: &str, is_c
     } else {
         bail!("failed with status code {} for url {}", resp.status(), url)
     }
-}
-
-async fn https_get<T: reqwest::IntoUrl>(url: T) -> reqwest::Result<reqwest::Response> {
-    // todo: resolve URL with our resolver
-    reqwest::Client::builder().https_only(true).build()?.get(url).send().await
 }
 
 // https://datatracker.ietf.org/doc/html/rfc7711
