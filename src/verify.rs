@@ -1,13 +1,16 @@
-use crate::{digest, Posh};
+use crate::{
+    common::ca_roots::TLS_SERVER_ROOTS,
+    srv::{digest, Posh},
+};
 use log::debug;
 use ring::digest::SHA256;
-use rustls::client::{ServerCertVerified, ServerCertVerifier};
-use rustls::server::{ClientCertVerified, ClientCertVerifier};
-use rustls::{Certificate, DistinguishedNames, Error, ServerName};
-use std::convert::TryFrom;
-use std::time::SystemTime;
-use tokio_rustls::webpki;
-use tokio_rustls::webpki::DnsName;
+use rustls::{
+    client::{ServerCertVerified, ServerCertVerifier},
+    server::{ClientCertVerified, ClientCertVerifier},
+    Certificate, DistinguishedNames, Error, ServerName,
+};
+use std::{convert::TryFrom, time::SystemTime};
+use tokio_rustls::{webpki, webpki::DnsName};
 
 type SignatureAlgorithms = &'static [&'static webpki::SignatureAlgorithm];
 
@@ -112,8 +115,7 @@ impl XmppServerCertVerifier {
         let (cert, chain) = prepare(end_entity, intermediates)?;
         let webpki_now = webpki::Time::try_from(now).map_err(|_| Error::FailedToGetCurrentTime)?;
 
-        cert.verify_is_valid_tls_server_cert(SUPPORTED_SIG_ALGS, &crate::TLS_SERVER_ROOTS, &chain, webpki_now)
-            .map_err(pki_error)?;
+        cert.verify_is_valid_tls_server_cert(SUPPORTED_SIG_ALGS, &TLS_SERVER_ROOTS, &chain, webpki_now).map_err(pki_error)?;
 
         for name in &self.names {
             if cert.verify_is_valid_for_dns_name(name.as_ref()).is_ok() {

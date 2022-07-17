@@ -1,8 +1,13 @@
-use crate::*;
 use anyhow::Result;
 use futures::StreamExt;
 
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+
+#[cfg(feature = "incoming")]
+pub mod incoming;
+
+#[cfg(feature = "outgoing")]
+pub mod outgoing;
 
 // https://datatracker.ietf.org/doc/html/rfc7395
 
@@ -27,23 +32,6 @@ pub async fn incoming_websocket_connection(stream: Box<dyn AsyncReadAndWrite + U
     let (in_wr, in_rd) = stream.split();
 
     Ok((StanzaRead::WebSocketRead(in_rd), StanzaWrite::WebSocketClientWrite(in_wr)))
-}
-
-#[cfg(feature = "incoming")]
-pub async fn handle_websocket_connection(
-    stream: Box<dyn AsyncReadAndWrite + Unpin + Send>,
-    config: CloneableConfig,
-    server_certs: ServerCerts,
-    local_addr: SocketAddr,
-    client_addr: &mut Context<'_>,
-    in_filter: StanzaFilter,
-) -> Result<()> {
-    client_addr.set_proto("websocket-in");
-    info!("{} connected", client_addr.log_from());
-
-    let (in_rd, in_wr) = incoming_websocket_connection(stream, config.max_stanza_size_bytes).await?;
-
-    shuffle_rd_wr_filter(in_rd, in_wr, config, server_certs, local_addr, client_addr, in_filter).await
 }
 
 pub fn from_ws(stanza: String) -> String {
@@ -97,34 +85,10 @@ pub fn to_ws_new(buf: &[u8], mut end_of_first_tag: usize, is_c2s: bool) -> Resul
     Ok(ret)
 }
 
-use rustls::ServerName;
-use std::convert::TryFrom;
-
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::header::{ORIGIN, SEC_WEBSOCKET_PROTOCOL};
-use tokio_tungstenite::tungstenite::http::Uri;
-
-#[cfg(feature = "outgoing")]
-pub async fn websocket_connect(target: SocketAddr, server_name: &str, url: &Uri, origin: &str, config: OutgoingVerifierConfig) -> Result<(StanzaWrite, StanzaRead)> {
-    let mut request = url.into_client_request()?;
-    request.headers_mut().append(SEC_WEBSOCKET_PROTOCOL, "xmpp".parse()?);
-    request.headers_mut().append(ORIGIN, origin.parse()?);
-
-    let dnsname = ServerName::try_from(server_name)?;
-    let stream = tokio::net::TcpStream::connect(target).await?;
-    let stream = config.connector.connect(dnsname, stream).await?;
-
-    //let stream: tokio_rustls::TlsStream<tokio::net::TcpStream> = stream.into();
-    // todo: tokio_tungstenite seems to have a bug, if the write buffer is non-zero, it'll hang forever, even though we always flush, investigate
-    //let stream = BufStream::with_capacity(crate::IN_BUFFER_SIZE, 0, stream);
-    let stream: Box<dyn AsyncReadAndWrite + Unpin + Send> = Box::new(stream);
-
-    let (stream, _) = tokio_tungstenite::client_async_with_config(request, stream, ws_cfg(config.max_stanza_size_bytes)).await?;
-
-    let (wrt, rd) = stream.split();
-
-    Ok((StanzaWrite::WebSocketClientWrite(wrt), StanzaRead::WebSocketRead(rd)))
-}
+use crate::{
+    in_out::{StanzaRead, StanzaWrite},
+    slicesubsequence::SliceSubsequence,
+};
 
 #[cfg(test)]
 mod tests {

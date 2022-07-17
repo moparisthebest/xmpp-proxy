@@ -39,7 +39,7 @@ fn main() {
     for (mut key, value) in env::vars() {
         //writeln!(&mut w, "{key}: {value}", ).unwrap();
         if value == "1" && key.starts_with("CARGO_FEATURE_") {
-            let mut key = key.split_off(14).replace("_", "-");
+            let mut key = key.split_off(14).replace('_', "-");
             key.make_ascii_lowercase();
             if allowed_features.contains(&key.as_str()) {
                 features.push(key);

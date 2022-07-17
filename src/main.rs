@@ -1,112 +1,14 @@
 #![deny(clippy::all)]
-
-use std::ffi::OsString;
-use std::fs::File;
-use std::io;
-use std::io::{BufReader, Read, Write};
-use std::iter::Iterator;
-use std::net::SocketAddr;
-use std::path::Path;
-use std::sync::{Arc, RwLock};
-
+use anyhow::Result;
 use die::{die, Die};
-
+use log::{debug, error, info};
 use serde_derive::Deserialize;
-
-use tokio::io::{AsyncWriteExt, ReadHalf, WriteHalf};
-use tokio::net::TcpListener;
+use std::{ffi::OsString, fs::File, io::Read, iter::Iterator, net::SocketAddr, path::Path, sync::Arc};
 use tokio::task::JoinHandle;
-
-#[cfg(feature = "rustls")]
-use rustls::{
-    sign::{CertifiedKey, RsaSigningKey, SigningKey},
-    Certificate, ClientConfig, PrivateKey, ServerConfig, SignatureScheme,
-};
-
-#[cfg(feature = "tokio-rustls")]
-use tokio_rustls::{
-    webpki::{DnsNameRef, TlsServerTrustAnchors, TrustAnchor},
-    TlsConnector,
-};
-
-use anyhow::{anyhow, bail, Result};
-
-mod slicesubsequence;
-use slicesubsequence::*;
-
-pub use xmpp_proxy::*;
-
-#[cfg(feature = "quic")]
-mod quic;
-#[cfg(feature = "quic")]
-use crate::quic::*;
-
-#[cfg(feature = "tls")]
-mod tls;
-#[cfg(feature = "tls")]
-use crate::tls::*;
+use xmpp_proxy::common::certs_key::CertsKey;
 
 #[cfg(feature = "outgoing")]
-mod outgoing;
-#[cfg(feature = "outgoing")]
-use crate::outgoing::*;
-
-#[cfg(any(feature = "s2s-incoming", feature = "outgoing"))]
-mod srv;
-#[cfg(any(feature = "s2s-incoming", feature = "outgoing"))]
-use crate::srv::*;
-
-#[cfg(feature = "websocket")]
-mod websocket;
-#[cfg(feature = "websocket")]
-use crate::websocket::*;
-
-#[cfg(any(feature = "s2s-incoming", feature = "outgoing"))]
-mod verify;
-#[cfg(any(feature = "s2s-incoming", feature = "outgoing"))]
-use crate::verify::*;
-
-mod in_out;
-pub use crate::in_out::*;
-
-const IN_BUFFER_SIZE: usize = 8192;
-
-// todo: split these out to outgoing module
-
-const ALPN_XMPP_CLIENT: &[u8] = b"xmpp-client";
-const ALPN_XMPP_SERVER: &[u8] = b"xmpp-server";
-
-#[cfg(all(feature = "webpki-roots", not(feature = "rustls-native-certs")))]
-pub use webpki_roots::TLS_SERVER_ROOTS;
-
-#[cfg(all(feature = "rustls-native-certs", not(feature = "webpki-roots")))]
-lazy_static::lazy_static! {
-    static ref TLS_SERVER_ROOTS: TlsServerTrustAnchors<'static> = {
-        // we need these to stick around for 'static, this is only called once so no problem
-        let certs = Box::leak(Box::new(rustls_native_certs::load_native_certs().expect("could not load platform certs")));
-        let root_cert_store = Box::leak(Box::new(Vec::new()));
-        for cert in certs {
-            // some system CAs are invalid, ignore those
-            if let Ok(ta) = TrustAnchor::try_from_cert_der(&cert.0) {
-                root_cert_store.push(ta);
-            }
-        }
-        TlsServerTrustAnchors(root_cert_store)
-    };
-}
-
-#[cfg(any(feature = "rustls-native-certs", feature = "webpki-roots"))]
-pub fn root_cert_store() -> rustls::RootCertStore {
-    use rustls::{OwnedTrustAnchor, RootCertStore};
-    let mut root_cert_store = RootCertStore::empty();
-    root_cert_store.add_server_trust_anchors(
-        TLS_SERVER_ROOTS
-            .0
-            .iter()
-            .map(|ta| OwnedTrustAnchor::from_subject_spki_name_constraints(ta.subject, ta.spki, ta.name_constraints)),
-    );
-    root_cert_store
-}
+use xmpp_proxy::{common::outgoing::OutgoingConfig, outgoing::spawn_outgoing_listener};
 
 #[derive(Deserialize, Default)]
 struct Config {
@@ -123,87 +25,6 @@ struct Config {
     log_style: Option<String>,
 }
 
-#[derive(Clone)]
-pub struct CloneableConfig {
-    max_stanza_size_bytes: usize,
-    #[cfg(feature = "s2s-incoming")]
-    s2s_target: Option<SocketAddr>,
-    #[cfg(feature = "c2s-incoming")]
-    c2s_target: Option<SocketAddr>,
-    proxy: bool,
-}
-
-struct CertsKey {
-    #[cfg(feature = "rustls-pemfile")]
-    inner: Result<RwLock<Arc<rustls::sign::CertifiedKey>>>,
-}
-
-impl CertsKey {
-    fn new(main_config: &Config) -> Self {
-        CertsKey {
-            #[cfg(feature = "rustls-pemfile")]
-            inner: main_config.certs_key().map(|c| RwLock::new(Arc::new(c))),
-        }
-    }
-
-    #[cfg(all(unix, any(feature = "incoming", feature = "s2s-outgoing")))]
-    fn spawn_refresh_task(&'static self, cfg_path: OsString) -> Option<JoinHandle<Result<()>>> {
-        if self.inner.is_err() {
-            None
-        } else {
-            Some(tokio::spawn(async move {
-                use tokio::signal::unix::{signal, SignalKind};
-                let mut stream = signal(SignalKind::hangup())?;
-                loop {
-                    stream.recv().await;
-                    info!("got SIGHUP");
-                    match Config::parse(&cfg_path).and_then(|c| c.certs_key()) {
-                        Ok(cert_key) => {
-                            if let Ok(rwl) = self.inner.as_ref() {
-                                let cert_key = Arc::new(cert_key);
-                                let mut certs_key = rwl.write().expect("CertKey poisoned?");
-                                *certs_key = cert_key;
-                                drop(certs_key);
-                                info!("reloaded cert/key successfully!");
-                            }
-                        }
-                        Err(e) => error!("invalid config/cert/key on SIGHUP: {}", e),
-                    };
-                }
-            }))
-        }
-    }
-}
-
-#[cfg(feature = "rustls-pemfile")]
-impl rustls::server::ResolvesServerCert for CertsKey {
-    fn resolve(&self, _: rustls::server::ClientHello) -> Option<Arc<rustls::sign::CertifiedKey>> {
-        self.inner.as_ref().map(|rwl| rwl.read().expect("CertKey poisoned?").clone()).ok()
-    }
-}
-
-#[cfg(feature = "rustls-pemfile")]
-impl rustls::client::ResolvesClientCert for CertsKey {
-    fn resolve(&self, _: &[&[u8]], _: &[SignatureScheme]) -> Option<Arc<CertifiedKey>> {
-        self.inner.as_ref().map(|rwl| rwl.read().expect("CertKey poisoned?").clone()).ok()
-    }
-
-    fn has_certs(&self) -> bool {
-        self.inner.is_ok()
-    }
-}
-
-#[cfg(not(feature = "rustls-pemfile"))]
-impl rustls::client::ResolvesClientCert for CertsKey {
-    fn resolve(&self, _: &[&[u8]], _: &[SignatureScheme]) -> Option<Arc<CertifiedKey>> {
-        None
-    }
-
-    fn has_certs(&self) -> bool {
-        false
-    }
-}
-
 impl Config {
     fn parse<P: AsRef<Path>>(path: P) -> Result<Config> {
         let mut f = File::open(path)?;
@@ -212,8 +33,9 @@ impl Config {
         Ok(toml::from_str(&input)?)
     }
 
-    fn get_cloneable_cfg(&self) -> CloneableConfig {
-        CloneableConfig {
+    #[cfg(feature = "incoming")]
+    fn get_cloneable_cfg(&self) -> xmpp_proxy::common::incoming::CloneableConfig {
+        xmpp_proxy::common::incoming::CloneableConfig {
             max_stanza_size_bytes: self.max_stanza_size_bytes,
             #[cfg(feature = "s2s-incoming")]
             s2s_target: self.s2s_target,
@@ -238,268 +60,41 @@ impl Config {
 
     #[cfg(feature = "rustls-pemfile")]
     fn certs_key(&self) -> Result<rustls::sign::CertifiedKey> {
-        use rustls_pemfile::{certs, read_all, Item};
-
-        let tls_key = read_all(&mut BufReader::new(File::open(&self.tls_key)?))
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))?
-            .into_iter()
-            .flat_map(|item| match item {
-                Item::RSAKey(der) => RsaSigningKey::new(&PrivateKey(der)).ok().map(Arc::new).map(|r| r as Arc<dyn SigningKey>),
-                Item::PKCS8Key(der) => rustls::sign::any_supported_type(&PrivateKey(der)).ok(),
-                Item::ECKey(der) => rustls::sign::any_supported_type(&PrivateKey(der)).ok(),
-                _ => None,
-            })
-            .next()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))?;
-
-        let tls_certs = certs(&mut BufReader::new(File::open(&self.tls_cert)?))
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid cert"))
-            .map(|mut certs| certs.drain(..).map(Certificate).collect())?;
-
-        Ok(rustls::sign::CertifiedKey::new(tls_certs, tls_key))
+        xmpp_proxy::common::read_certified_key(&self.tls_key, &self.tls_cert)
     }
 
-    #[cfg(feature = "incoming")]
-    fn server_config(&self, certs_key: Arc<CertsKey>) -> Result<ServerConfig> {
-        if let Err(e) = &certs_key.inner {
-            bail!("invalid cert/key: {}", e);
-        }
-
-        let config = ServerConfig::builder().with_safe_defaults();
-        #[cfg(feature = "s2s")]
-        let config = config.with_client_cert_verifier(Arc::new(AllowAnonymousOrAnyCert));
-        #[cfg(not(feature = "s2s"))]
-        let config = config.with_no_client_auth();
-        let mut config = config.with_cert_resolver(certs_key);
-        // todo: will connecting without alpn work then?
-        config.alpn_protocols.push(ALPN_XMPP_CLIENT.to_vec());
-        config.alpn_protocols.push(ALPN_XMPP_SERVER.to_vec());
-
-        Ok(config)
+    #[cfg(not(feature = "rustls-pemfile"))]
+    fn certs_key(&self) -> Result<rustls::sign::CertifiedKey> {
+        anyhow::bail!("rustls-pemfile disabled at compile time")
     }
 }
 
-#[derive(Clone)]
-#[cfg(feature = "outgoing")]
-pub struct OutgoingConfig {
-    max_stanza_size_bytes: usize,
-    certs_key: Arc<CertsKey>,
-}
-
-#[cfg(feature = "outgoing")]
-impl OutgoingConfig {
-    pub fn with_custom_certificate_verifier(&self, is_c2s: bool, cert_verifier: XmppServerCertVerifier) -> OutgoingVerifierConfig {
-        let config = match is_c2s {
-            false => ClientConfig::builder()
-                .with_safe_defaults()
-                .with_custom_certificate_verifier(Arc::new(cert_verifier))
-                .with_client_cert_resolver(self.certs_key.clone()),
-            _ => ClientConfig::builder()
-                .with_safe_defaults()
-                .with_custom_certificate_verifier(Arc::new(cert_verifier))
-                .with_no_client_auth(),
-        };
-
-        let mut config_alpn = config.clone();
-        config_alpn.alpn_protocols.push(if is_c2s { ALPN_XMPP_CLIENT } else { ALPN_XMPP_SERVER }.to_vec());
-
-        let config_alpn = Arc::new(config_alpn);
-
-        let connector_alpn: TlsConnector = config_alpn.clone().into();
-
-        let connector: TlsConnector = Arc::new(config).into();
-
-        OutgoingVerifierConfig {
-            max_stanza_size_bytes: self.max_stanza_size_bytes,
-            config_alpn,
-            connector_alpn,
-            connector,
-        }
-    }
-}
-
-#[derive(Clone)]
-#[cfg(feature = "outgoing")]
-pub struct OutgoingVerifierConfig {
-    pub max_stanza_size_bytes: usize,
-
-    pub config_alpn: Arc<ClientConfig>,
-    pub connector_alpn: TlsConnector,
-
-    pub connector: TlsConnector,
-}
-
-#[cfg(feature = "incoming")]
-async fn shuffle_rd_wr(in_rd: StanzaRead, in_wr: StanzaWrite, config: CloneableConfig, server_certs: ServerCerts, local_addr: SocketAddr, client_addr: &mut Context<'_>) -> Result<()> {
-    let filter = StanzaFilter::new(config.max_stanza_size_bytes);
-    shuffle_rd_wr_filter(in_rd, in_wr, config, server_certs, local_addr, client_addr, filter).await
-}
-
-#[cfg(feature = "incoming")]
-async fn shuffle_rd_wr_filter(
-    mut in_rd: StanzaRead,
-    mut in_wr: StanzaWrite,
-    config: CloneableConfig,
-    server_certs: ServerCerts,
-    local_addr: SocketAddr,
-    client_addr: &mut Context<'_>,
-    mut in_filter: StanzaFilter,
-) -> Result<()> {
-    // now read to figure out client vs server
-    let (stream_open, is_c2s) = stream_preamble(&mut in_rd, &mut in_wr, client_addr.log_from(), &mut in_filter).await?;
-    client_addr.set_c2s_stream_open(is_c2s, &stream_open);
-
-    #[cfg(feature = "s2s-incoming")]
-    {
-        trace!(
-            "{} connected: sni: {:?}, alpn: {:?}, tls-not-quic: {}",
-            client_addr.log_from(),
-            server_certs.sni(),
-            server_certs.alpn().map(|a| String::from_utf8_lossy(&a).to_string()),
-            server_certs.is_tls(),
-        );
-
-        if !is_c2s {
-            // for s2s we need this
-            use std::time::SystemTime;
-            let domain = stream_open
-                .extract_between(b" from='", b"'")
-                .or_else(|_| stream_open.extract_between(b" from=\"", b"\""))
-                .and_then(|b| Ok(std::str::from_utf8(b)?))?;
-            let (_, cert_verifier) = get_xmpp_connections(domain, is_c2s).await?;
-            let certs = server_certs.peer_certificates().ok_or_else(|| anyhow!("no client cert auth for s2s incoming from {}", domain))?;
-            // todo: send stream error saying cert is invalid
-            cert_verifier.verify_cert(&certs[0], &certs[1..], SystemTime::now())?;
-        }
-        drop(server_certs);
-    }
-
-    let (out_rd, out_wr) = open_incoming(&config, local_addr, client_addr, &stream_open, is_c2s, &mut in_filter).await?;
-    drop(stream_open);
-
-    shuffle_rd_wr_filter_only(
-        in_rd,
-        in_wr,
-        StanzaRead::new(out_rd),
-        StanzaWrite::new(out_wr),
-        is_c2s,
-        config.max_stanza_size_bytes,
-        client_addr,
-        in_filter,
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn shuffle_rd_wr_filter_only(
-    mut in_rd: StanzaRead,
-    mut in_wr: StanzaWrite,
-    mut out_rd: StanzaRead,
-    mut out_wr: StanzaWrite,
-    is_c2s: bool,
-    max_stanza_size_bytes: usize,
-    client_addr: &mut Context<'_>,
-    mut in_filter: StanzaFilter,
-) -> Result<()> {
-    let mut out_filter = StanzaFilter::new(max_stanza_size_bytes);
-
-    loop {
-        tokio::select! {
-            Ok(ret) = in_rd.next(&mut in_filter, client_addr.log_to(), &mut in_wr) => {
-                match ret {
-                    None => break,
-                    Some((buf, eoft)) => {
-                        trace!("{} '{}'", client_addr.log_from(), to_str(buf));
-                        out_wr.write_all(is_c2s, buf, eoft, client_addr.log_from()).await?;
-                        out_wr.flush().await?;
-                    }
-                }
-            },
-            Ok(ret) = out_rd.next(&mut out_filter, client_addr.log_from(), &mut out_wr) => {
-                match ret {
-                    None => break,
-                    Some((buf, eoft)) => {
-                        trace!("{} '{}'", client_addr.log_to(), to_str(buf));
-                        in_wr.write_all(is_c2s, buf, eoft, client_addr.log_to()).await?;
-                        in_wr.flush().await?;
-                    }
-                }
-            },
-        }
-    }
-
-    info!("{} disconnected", client_addr.log_from());
-    Ok(())
-}
-
-#[cfg(feature = "incoming")]
-async fn open_incoming(
-    config: &CloneableConfig,
-    local_addr: SocketAddr,
-    client_addr: &mut Context<'_>,
-    stream_open: &[u8],
-    is_c2s: bool,
-    in_filter: &mut StanzaFilter,
-) -> Result<(ReadHalf<tokio::net::TcpStream>, WriteHalf<tokio::net::TcpStream>)> {
-    let target = if is_c2s {
-        #[cfg(not(feature = "c2s-incoming"))]
-        bail!("incoming c2s connection but lacking compile-time support");
-        #[cfg(feature = "c2s-incoming")]
-        config.c2s_target
+#[cfg(all(unix, any(feature = "incoming", feature = "s2s-outgoing")))]
+fn spawn_refresh_task(certs_key: &'static CertsKey, cfg_path: OsString) -> Option<JoinHandle<Result<()>>> {
+    if certs_key.inner.is_err() {
+        None
     } else {
-        #[cfg(not(feature = "s2s-incoming"))]
-        bail!("incoming s2s connection but lacking compile-time support");
-        #[cfg(feature = "s2s-incoming")]
-        config.s2s_target
+        Some(tokio::spawn(async move {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut stream = signal(SignalKind::hangup())?;
+            loop {
+                stream.recv().await;
+                info!("got SIGHUP");
+                match Config::parse(&cfg_path).and_then(|c| c.certs_key()) {
+                    Ok(cert_key) => {
+                        if let Ok(rwl) = certs_key.inner.as_ref() {
+                            let cert_key = Arc::new(cert_key);
+                            let mut certs_key = rwl.write().expect("CertKey poisoned?");
+                            *certs_key = cert_key;
+                            drop(certs_key);
+                            info!("reloaded cert/key successfully!");
+                        }
+                    }
+                    Err(e) => error!("invalid config/cert/key on SIGHUP: {}", e),
+                };
+            }
+        }))
     }
-    .ok_or_else(|| anyhow!("incoming connection but `{}_target` not defined", c2s(is_c2s)))?;
-    client_addr.set_to_addr(target);
-
-    let out_stream = tokio::net::TcpStream::connect(target).await?;
-    let (out_rd, mut out_wr) = tokio::io::split(out_stream);
-
-    if config.proxy {
-        /*
-        https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt
-        PROXY TCP4 255.255.255.255 255.255.255.255 65535 65535\r\n
-        PROXY TCP6 ffff:f...f:ffff ffff:f...f:ffff 65535 65535\r\n
-        PROXY TCP6 SOURCE_IP DEST_IP SOURCE_PORT DEST_PORT\r\n
-         */
-        // tokio AsyncWrite doesn't have write_fmt so have to go through this buffer for some crazy reason
-        //write!(out_wr, "PROXY TCP{} {} {} {} {}\r\n", if client_addr.is_ipv4() { '4' } else {'6' }, client_addr.ip(), local_addr.ip(), client_addr.port(), local_addr.port())?;
-        write!(
-            &mut in_filter.buf[0..],
-            "PROXY TCP{} {} {} {} {}\r\n",
-            if client_addr.client_addr().is_ipv4() { '4' } else { '6' },
-            client_addr.client_addr().ip(),
-            local_addr.ip(),
-            client_addr.client_addr().port(),
-            local_addr.port()
-        )?;
-        let end_idx = &(&in_filter.buf[0..]).first_index_of(b"\n")? + 1;
-        trace!("{} '{}'", client_addr.log_from(), to_str(&in_filter.buf[0..end_idx]));
-        out_wr.write_all(&in_filter.buf[0..end_idx]).await?;
-    }
-    trace!("{} '{}'", client_addr.log_from(), to_str(stream_open));
-    out_wr.write_all(stream_open).await?;
-    out_wr.flush().await?;
-    Ok((out_rd, out_wr))
-}
-
-pub async fn stream_preamble(in_rd: &mut StanzaRead, in_wr: &mut StanzaWrite, client_addr: &'_ str, in_filter: &mut StanzaFilter) -> Result<(Vec<u8>, bool)> {
-    let mut stream_open = Vec::new();
-    while let Ok(Some((buf, _))) = in_rd.next(in_filter, client_addr, in_wr).await {
-        trace!("{} received pre-<stream:stream> stanza: '{}'", client_addr, to_str(buf));
-        if buf.starts_with(b"<?xml ") {
-            stream_open.extend_from_slice(buf);
-        } else if buf.starts_with(b"<stream:stream ") {
-            stream_open.extend_from_slice(buf);
-            return Ok((stream_open, buf.contains_seq(br#" xmlns="jabber:client""#) || buf.contains_seq(br#" xmlns='jabber:client'"#)));
-        } else {
-            bail!("bad pre-<stream:stream> stanza: {}", to_str(buf));
-        }
-    }
-    bail!("stream ended before open")
 }
 
 #[tokio::main]
@@ -533,18 +128,23 @@ async fn main() {
         die!("log_level or log_style defined in config but logging disabled at compile-time");
     }
 
+    #[cfg(feature = "incoming")]
     let config = main_config.get_cloneable_cfg();
 
-    let certs_key = Arc::new(CertsKey::new(&main_config));
+    let certs_key = Arc::new(CertsKey::new(main_config.certs_key()));
 
     let mut handles: Vec<JoinHandle<Result<()>>> = Vec::new();
     if !main_config.incoming_listen.is_empty() {
         #[cfg(all(any(feature = "tls", feature = "websocket"), feature = "incoming"))]
         {
+            use xmpp_proxy::{
+                common::incoming::server_config,
+                tls::incoming::{spawn_tls_listener, tls_acceptor},
+            };
             if main_config.c2s_target.is_none() && main_config.s2s_target.is_none() {
                 die!("one of c2s_target/s2s_target must be defined if incoming_listen is non-empty");
             }
-            let acceptor = main_config.tls_acceptor(certs_key.clone()).die("invalid cert/key ?");
+            let acceptor = tls_acceptor(server_config(certs_key.clone()).die("invalid cert/key ?"));
             for listener in main_config.incoming_listen.iter() {
                 handles.push(spawn_tls_listener(listener.parse().die("invalid listener address"), config.clone(), acceptor.clone()));
             }
@@ -555,10 +155,14 @@ async fn main() {
     if !main_config.quic_listen.is_empty() {
         #[cfg(all(feature = "quic", feature = "incoming"))]
         {
+            use xmpp_proxy::{
+                common::incoming::server_config,
+                quic::incoming::{quic_server_config, spawn_quic_listener},
+            };
             if main_config.c2s_target.is_none() && main_config.s2s_target.is_none() {
                 die!("one of c2s_target/s2s_target must be defined if quic_listen is non-empty");
             }
-            let quic_config = main_config.quic_server_config(certs_key.clone()).die("invalid cert/key ?");
+            let quic_config = quic_server_config(server_config(certs_key.clone()).die("invalid cert/key ?"));
             for listener in main_config.quic_listen.iter() {
                 handles.push(spawn_quic_listener(listener.parse().die("invalid listener address"), config.clone(), quic_config.clone()));
             }
@@ -581,8 +185,11 @@ async fn main() {
         die!("all of incoming_listen, quic_listen, outgoing_listen empty, nothing to do, exiting...");
     }
     #[cfg(all(unix, any(feature = "incoming", feature = "s2s-outgoing")))]
-    if let Some(refresh_task) = Box::leak(Box::new(certs_key.clone())).spawn_refresh_task(cfg_path) {
-        handles.push(refresh_task);
+    {
+        let certs_key = Box::leak(Box::new(certs_key.clone()));
+        if let Some(refresh_task) = spawn_refresh_task(certs_key, cfg_path) {
+            handles.push(refresh_task);
+        }
     }
 
     info!("xmpp-proxy started");

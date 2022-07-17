@@ -1,22 +1,33 @@
 #![allow(clippy::upper_case_acronyms)]
 
-use std::cmp::Ordering;
-use std::convert::TryFrom;
-use std::net::{IpAddr, SocketAddr};
-
-use data_encoding::BASE64;
-use ring::digest::{Algorithm, Context as DigestContext, SHA256, SHA512};
-
-use trust_dns_resolver::error::ResolveError;
-use trust_dns_resolver::lookup::{SrvLookup, TxtLookup};
-use trust_dns_resolver::{IntoName, TokioAsyncResolver};
-
+#[cfg(feature = "outgoing")]
+use crate::common::outgoing::{OutgoingConfig, OutgoingVerifierConfig};
+use crate::{
+    common::{stream_preamble, to_str},
+    context::Context,
+    in_out::{StanzaRead, StanzaWrite},
+    slicesubsequence::SliceSubsequence,
+    stanzafilter::{StanzaFilter, StanzaReader},
+    verify::XmppServerCertVerifier,
+};
 use anyhow::{bail, Result};
-use tokio_rustls::webpki::DnsName;
+use data_encoding::BASE64;
+use log::{debug, error, trace};
+use ring::digest::{Algorithm, Context as DigestContext, SHA256, SHA512};
+use serde::Deserialize;
+use std::{
+    cmp::Ordering,
+    convert::TryFrom,
+    net::{IpAddr, SocketAddr},
+};
+use tokio_rustls::webpki::{DnsName, DnsNameRef};
 #[cfg(feature = "websocket")]
 use tokio_tungstenite::tungstenite::http::Uri;
-
-use crate::*;
+use trust_dns_resolver::{
+    error::ResolveError,
+    lookup::{SrvLookup, TxtLookup},
+    IntoName, TokioAsyncResolver,
+};
 
 lazy_static::lazy_static! {
     static ref RESOLVER: TokioAsyncResolver = make_resolver();
@@ -165,7 +176,7 @@ impl XmppConnection {
         &self,
         domain: &str,
         stream_open: &[u8],
-        in_filter: &mut crate::StanzaFilter,
+        in_filter: &mut StanzaFilter,
         client_addr: &mut Context<'_>,
         config: OutgoingVerifierConfig,
     ) -> Result<(StanzaWrite, StanzaRead, SocketAddr, &'static str)> {
@@ -184,28 +195,28 @@ impl XmppConnection {
             debug!("{} trying ip {}", client_addr.log_from(), to_addr);
             match self.conn_type {
                 #[cfg(feature = "tls")]
-                XmppConnectionType::StartTLS => match crate::starttls_connect(to_addr, domain, stream_open, in_filter, config.clone()).await {
+                XmppConnectionType::StartTLS => match crate::tls::outgoing::starttls_connect(to_addr, domain, stream_open, in_filter, config.clone()).await {
                     Ok((wr, rd)) => return Ok((wr, rd, to_addr, "starttls-out")),
                     Err(e) => error!("starttls connection failed to IP {} from SRV {}, error: {}", to_addr, self.target, e),
                 },
                 #[cfg(feature = "tls")]
-                XmppConnectionType::DirectTLS => match crate::tls_connect(to_addr, domain, config.clone()).await {
+                XmppConnectionType::DirectTLS => match crate::tls::outgoing::tls_connect(to_addr, domain, config.clone()).await {
                     Ok((wr, rd)) => return Ok((wr, rd, to_addr, "directtls-out")),
                     Err(e) => error!("direct tls connection failed to IP {} from SRV {}, error: {}", to_addr, self.target, e),
                 },
                 #[cfg(feature = "quic")]
-                XmppConnectionType::QUIC => match crate::quic_connect(to_addr, domain, config.clone()).await {
+                XmppConnectionType::QUIC => match crate::quic::outgoing::quic_connect(to_addr, domain, config.clone()).await {
                     Ok((wr, rd)) => return Ok((wr, rd, to_addr, "quic-out")),
                     Err(e) => error!("quic connection failed to IP {} from SRV {}, error: {}", to_addr, self.target, e),
                 },
                 #[cfg(feature = "websocket")]
                 // todo: when websocket is found via DNS, we need to validate cert against domain, *not* target, this is a security problem with XEP-0156, we are doing it the secure but likely unexpected way here for now
-                XmppConnectionType::WebSocket(ref url, ref origin) => match crate::websocket_connect(to_addr, domain, url, origin, config.clone()).await {
+                XmppConnectionType::WebSocket(ref url, ref origin) => match crate::websocket::outgoing::websocket_connect(to_addr, domain, url, origin, config.clone()).await {
                     Ok((wr, rd)) => return Ok((wr, rd, to_addr, "websocket-out")),
                     Err(e) => {
                         if self.secure && self.target != orig_domain {
                             // https is a special case, as target is sent in the Host: header, so we have to literally try twice in case this is set for the other on the server
-                            match crate::websocket_connect(to_addr, orig_domain, url, origin, config.clone()).await {
+                            match crate::websocket::outgoing::websocket_connect(to_addr, orig_domain, url, origin, config.clone()).await {
                                 Ok((wr, rd)) => return Ok((wr, rd, to_addr, "websocket-out")),
                                 Err(e2) => error!("websocket connection failed to IP {} from TXT {}, error try 1: {}, error try 2: {}", to_addr, url, e, e2),
                             }
@@ -428,7 +439,7 @@ pub async fn srv_connect(
     domain: &str,
     is_c2s: bool,
     stream_open: &[u8],
-    in_filter: &mut crate::StanzaFilter,
+    in_filter: &mut StanzaFilter,
     client_addr: &mut Context<'_>,
     config: OutgoingConfig,
 ) -> Result<(StanzaWrite, StanzaRead, Vec<u8>)> {
