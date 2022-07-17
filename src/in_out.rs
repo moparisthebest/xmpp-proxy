@@ -1,14 +1,20 @@
 // Box<dyn AsyncWrite + Unpin + Send>, Box<dyn AsyncRead + Unpin + Send>
 
 #[cfg(feature = "websocket")]
-use crate::{from_ws, to_ws_new, AsyncReadAndWrite};
-use crate::{slicesubsequence::SliceSubsequence, trace, StanzaFilter, StanzaRead::*, StanzaReader, StanzaWrite::*};
+use crate::websocket::{from_ws, to_ws_new, AsyncReadAndWrite};
+use crate::{
+    common::IN_BUFFER_SIZE,
+    in_out::{StanzaRead::*, StanzaWrite::*},
+    slicesubsequence::SliceSubsequence,
+    stanzafilter::{StanzaFilter, StanzaReader},
+};
 use anyhow::{bail, Result};
 #[cfg(feature = "websocket")]
 use futures_util::{
     stream::{SplitSink, SplitStream},
     SinkExt, TryStreamExt,
 };
+use log::trace;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 #[cfg(feature = "websocket")]
 use tokio_tungstenite::{tungstenite::Message::*, WebSocketStream};
@@ -75,7 +81,7 @@ impl StanzaRead {
     #[inline(always)]
     pub fn new<T: 'static + AsyncRead + Unpin + Send>(rd: T) -> Self {
         // we naively read 1 byte at a time, which buffering significantly speeds up
-        AsyncRead(StanzaReader(Box::new(BufReader::with_capacity(crate::IN_BUFFER_SIZE, rd))))
+        AsyncRead(StanzaReader(Box::new(BufReader::with_capacity(IN_BUFFER_SIZE, rd))))
     }
 
     #[inline(always)]

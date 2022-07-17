@@ -1,4 +1,16 @@
-use crate::*;
+use crate::{
+    common::{first_bytes_match, outgoing::OutgoingConfig, shuffle_rd_wr_filter_only, stream_preamble},
+    context::Context,
+    in_out::{StanzaRead, StanzaWrite},
+    slicesubsequence::SliceSubsequence,
+    srv::srv_connect,
+    stanzafilter::StanzaFilter,
+};
+use anyhow::Result;
+use die::Die;
+use log::{error, info};
+use std::net::SocketAddr;
+use tokio::{net::TcpListener, task::JoinHandle};
 
 async fn handle_outgoing_connection(stream: tokio::net::TcpStream, client_addr: &mut Context<'_>, config: OutgoingConfig) -> Result<()> {
     info!("{} connected", client_addr.log_from());
@@ -7,7 +19,7 @@ async fn handle_outgoing_connection(stream: tokio::net::TcpStream, client_addr: 
 
     #[cfg(feature = "websocket")]
     let (mut in_rd, mut in_wr) = if first_bytes_match(&stream, &mut in_filter.buf[0..3], |p| p == b"GET").await? {
-        incoming_websocket_connection(Box::new(stream), config.max_stanza_size_bytes).await?
+        crate::websocket::incoming_websocket_connection(Box::new(stream), config.max_stanza_size_bytes).await?
     } else {
         let (in_rd, in_wr) = tokio::io::split(stream);
         (StanzaRead::new(in_rd), StanzaWrite::new(in_wr))

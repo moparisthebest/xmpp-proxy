@@ -1,71 +1,30 @@
-use crate::*;
-use rustls::ServerConnection;
-use std::convert::TryFrom;
-use tokio::io::{AsyncBufReadExt, BufStream};
+use crate::common::incoming::{shuffle_rd_wr_filter, CloneableConfig, ServerCerts};
 
-use tokio_rustls::{rustls::ServerName, TlsAcceptor};
+use crate::{
+    common::{first_bytes_match, to_str, IN_BUFFER_SIZE},
+    context::Context,
+    in_out::{StanzaRead, StanzaWrite},
+    slicesubsequence::SliceSubsequence,
+    stanzafilter::{StanzaFilter, StanzaReader},
+    *,
+};
+use anyhow::Result;
+use die::Die;
+use log::{error, trace};
+use rustls::{ServerConfig, ServerConnection};
 
-#[cfg(feature = "outgoing")]
-pub async fn tls_connect(target: SocketAddr, server_name: &str, config: OutgoingVerifierConfig) -> Result<(StanzaWrite, StanzaRead)> {
-    let dnsname = ServerName::try_from(server_name)?;
-    let stream = tokio::net::TcpStream::connect(target).await?;
-    let stream = config.connector_alpn.connect(dnsname, stream).await?;
-    let (rd, wrt) = tokio::io::split(stream);
-    Ok((StanzaWrite::new(wrt), StanzaRead::new(rd)))
+use std::sync::Arc;
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufStream},
+    net::TcpListener,
+    task::JoinHandle,
+};
+use tokio_rustls::TlsAcceptor;
+
+pub fn tls_acceptor(server_config: ServerConfig) -> TlsAcceptor {
+    TlsAcceptor::from(Arc::new(server_config))
 }
 
-#[cfg(feature = "outgoing")]
-pub async fn starttls_connect(target: SocketAddr, server_name: &str, stream_open: &[u8], in_filter: &mut StanzaFilter, config: OutgoingVerifierConfig) -> Result<(StanzaWrite, StanzaRead)> {
-    let dnsname = ServerName::try_from(server_name)?;
-    let mut stream = tokio::net::TcpStream::connect(target).await?;
-    let (in_rd, mut in_wr) = stream.split();
-
-    // send the stream_open
-    trace!("starttls sending: {} '{}'", server_name, to_str(stream_open));
-    in_wr.write_all(stream_open).await?;
-    in_wr.flush().await?;
-
-    // we naively read 1 byte at a time, which buffering significantly speeds up
-    let in_rd = tokio::io::BufReader::with_capacity(IN_BUFFER_SIZE, in_rd);
-    let mut in_rd = StanzaReader(in_rd);
-    let mut proceed_received = false;
-
-    trace!("starttls reading stream open {}", server_name);
-    while let Ok(Some(buf)) = in_rd.next(in_filter).await {
-        trace!("received pre-tls stanza: {} '{}'", server_name, to_str(buf));
-        if buf.starts_with(b"<?xml ") || buf.starts_with(b"<stream:stream ") {
-            // ignore this
-        } else if buf.starts_with(b"<stream:features") {
-            // we send starttls regardless, it could have been stripped out, we don't do plaintext
-            let buf = br###"<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>"###;
-            trace!("> {} '{}'", server_name, to_str(buf));
-            in_wr.write_all(buf).await?;
-            in_wr.flush().await?;
-        } else if buf.starts_with(b"<proceed ") {
-            proceed_received = true;
-            break;
-        } else {
-            bail!("bad pre-tls stanza: {}", to_str(buf));
-        }
-    }
-    if !proceed_received {
-        bail!("stream ended before proceed");
-    }
-
-    debug!("starttls starting TLS {}", server_name);
-    let stream = config.connector.connect(dnsname, stream).await?;
-    let (rd, wrt) = tokio::io::split(stream);
-    Ok((StanzaWrite::new(wrt), StanzaRead::new(rd)))
-}
-
-#[cfg(feature = "incoming")]
-impl Config {
-    pub fn tls_acceptor(&self, cert_key: Arc<CertsKey>) -> Result<TlsAcceptor> {
-        Ok(TlsAcceptor::from(Arc::new(self.server_config(cert_key)?)))
-    }
-}
-
-#[cfg(feature = "incoming")]
 pub fn spawn_tls_listener(local_addr: SocketAddr, config: CloneableConfig, acceptor: TlsAcceptor) -> JoinHandle<Result<()>> {
     tokio::spawn(async move {
         let listener = TcpListener::bind(&local_addr).await.die("cannot listen on port/interface");
@@ -83,7 +42,6 @@ pub fn spawn_tls_listener(local_addr: SocketAddr, config: CloneableConfig, accep
     })
 }
 
-#[cfg(feature = "incoming")]
 async fn handle_tls_connection(mut stream: tokio::net::TcpStream, client_addr: &mut Context<'_>, local_addr: SocketAddr, config: CloneableConfig, acceptor: TlsAcceptor) -> Result<()> {
     info!("{} connected", client_addr.log_from());
 
@@ -183,7 +141,7 @@ async fn handle_tls_connection(mut stream: tokio::net::TcpStream, client_addr: &
     {
         let stream: tokio_rustls::TlsStream<tokio::net::TcpStream> = stream.into();
 
-        let mut stream = BufStream::with_capacity(crate::IN_BUFFER_SIZE, 0, stream);
+        let mut stream = BufStream::with_capacity(IN_BUFFER_SIZE, 0, stream);
         let websocket = {
             // wait up to 10 seconds until 3 bytes have been read
             use std::time::{Duration, Instant};
@@ -207,7 +165,7 @@ async fn handle_tls_connection(mut stream: tokio::net::TcpStream, client_addr: &
         };
 
         if websocket {
-            handle_websocket_connection(Box::new(stream), config, server_certs, local_addr, client_addr, in_filter).await
+            crate::websocket::incoming::handle_websocket_connection(Box::new(stream), config, server_certs, local_addr, client_addr, in_filter).await
         } else {
             let (in_rd, in_wr) = tokio::io::split(stream);
             shuffle_rd_wr_filter(StanzaRead::already_buffered(in_rd), StanzaWrite::new(in_wr), config, server_certs, local_addr, client_addr, in_filter).await

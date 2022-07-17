@@ -1,9 +1,9 @@
 #![allow(clippy::upper_case_acronyms)]
 
+use crate::common::to_str;
 use anyhow::{bail, Result};
 
-use crate::stanzafilter::StanzaState::*;
-use crate::to_str;
+use StanzaState::*;
 
 #[derive(Debug)]
 enum StanzaState {
