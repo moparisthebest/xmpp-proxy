@@ -57,9 +57,7 @@ rustls = { version = "0.20.2", optional = true }
 rustls-pemfile = { version = "1.0.0", optional = true }
 
 # websocket deps
-# todo: fix up the situation with these roots
-#tokio-tungstenite = { version = "0.17", optional = true, features = ["rustls-tls-webpki-roots"] }
-tokio-tungstenite = { version = "0.17", optional = true, features = ["rustls-tls-native-roots"] }
+tokio-tungstenite = { version = "0.17", optional = true, default-features = false }
 futures-util = { version = "0.3", default-features = false, features = ["async-await", "sink", "std"], optional = true }
 
 [features]

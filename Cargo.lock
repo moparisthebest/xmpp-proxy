@@ -1194,12 +1194,8 @@ checksum = "06cda1232a49558c46f8a504d5b93101d42c0bf7f911f12a105ba48168f821ae"
 dependencies = [
  "futures-util",
  "log",
- "rustls",
- "rustls-native-certs",
  "tokio",
- "tokio-rustls",
  "tungstenite",
- "webpki",
 ]
 
 [[package]]
@@ -1327,12 +1323,10 @@ dependencies = [
  "httparse",
  "log",
  "rand",
- "rustls",
  "sha-1",
  "thiserror",
  "url",
  "utf-8",
- "webpki",
 ]
 
 [[package]]
