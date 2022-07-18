@@ -7,9 +7,7 @@ use crate::{
     stanzafilter::StanzaFilter,
 };
 use anyhow::Result;
-use die::Die;
 use log::{error, info};
-use std::net::SocketAddr;
 use tokio::{net::TcpListener, task::JoinHandle};
 
 async fn handle_outgoing_connection(stream: tokio::net::TcpStream, client_addr: &mut Context<'_>, config: OutgoingConfig) -> Result<()> {
@@ -48,9 +46,8 @@ async fn handle_outgoing_connection(stream: tokio::net::TcpStream, client_addr: 
     shuffle_rd_wr_filter_only(in_rd, in_wr, out_rd, out_wr, is_c2s, max_stanza_size_bytes, client_addr, in_filter).await
 }
 
-pub fn spawn_outgoing_listener(local_addr: SocketAddr, config: OutgoingConfig) -> JoinHandle<Result<()>> {
+pub fn spawn_outgoing_listener(listener: TcpListener, config: OutgoingConfig) -> JoinHandle<Result<()>> {
     tokio::spawn(async move {
-        let listener = TcpListener::bind(&local_addr).await.die("cannot listen on port/interface");
         loop {
             let (stream, client_addr) = listener.accept().await?;
             let config = config.clone();

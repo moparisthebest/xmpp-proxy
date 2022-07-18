@@ -18,6 +18,8 @@ fn main() {
         "websocket",
         "tls-ca-roots-native",
         "tls-ca-roots-bundled",
+        "logging",
+        "systemd",
     ];
     let optional_deps = [
         "rustls",
@@ -33,6 +35,7 @@ fn main() {
         "webpki-roots",
         "env-logger",
         "rand",
+        "nix",
     ];
     let mut features = Vec::new();
     let mut optional = Vec::new();

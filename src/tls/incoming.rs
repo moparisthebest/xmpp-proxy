@@ -1,19 +1,18 @@
-use crate::common::incoming::{shuffle_rd_wr_filter, CloneableConfig, ServerCerts};
-use std::net::SocketAddr;
-
 use crate::{
-    common::{first_bytes_match, to_str, IN_BUFFER_SIZE},
+    common::{
+        first_bytes_match,
+        incoming::{shuffle_rd_wr_filter, CloneableConfig, ServerCerts},
+        to_str, IN_BUFFER_SIZE,
+    },
     context::Context,
     in_out::{StanzaRead, StanzaWrite},
     slicesubsequence::SliceSubsequence,
     stanzafilter::{StanzaFilter, StanzaReader},
 };
 use anyhow::{bail, Result};
-use die::Die;
 use log::{error, info, trace};
 use rustls::{ServerConfig, ServerConnection};
-
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufStream},
     net::TcpListener,
@@ -25,9 +24,9 @@ pub fn tls_acceptor(server_config: ServerConfig) -> TlsAcceptor {
     TlsAcceptor::from(Arc::new(server_config))
 }
 
-pub fn spawn_tls_listener(local_addr: SocketAddr, config: CloneableConfig, acceptor: TlsAcceptor) -> JoinHandle<Result<()>> {
+pub fn spawn_tls_listener(listener: TcpListener, config: CloneableConfig, acceptor: TlsAcceptor) -> JoinHandle<Result<()>> {
     tokio::spawn(async move {
-        let listener = TcpListener::bind(&local_addr).await.die("cannot listen on port/interface");
+        let local_addr = listener.local_addr()?;
         loop {
             let (stream, client_addr) = listener.accept().await?;
             let config = config.clone();

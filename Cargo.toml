@@ -60,8 +60,11 @@ rustls-pemfile = { version = "1.0.0", optional = true }
 tokio-tungstenite = { version = "0.17", optional = true, default-features = false }
 futures-util = { version = "0.3", default-features = false, features = ["async-await", "sink", "std"], optional = true }
 
+# systemd dep
+nix = { version = "0.24", optional = true, default-features = false, features = ["socket"]}
+
 [features]
-default = ["c2s-incoming", "c2s-outgoing", "s2s-incoming", "s2s-outgoing", "tls", "quic", "websocket", "logging", "tls-ca-roots-native"]
+default = ["c2s-incoming", "c2s-outgoing", "s2s-incoming", "s2s-outgoing", "tls", "quic", "websocket", "logging", "tls-ca-roots-native", "systemd"]
 
 # you must pick one of these or the other, not both: todo: enable picking both and choosing at runtime
 # don't need either of these if only doing c2s-incoming
@@ -88,6 +91,7 @@ quic = ["quinn", "rustls"]
 websocket = ["tokio-tungstenite", "futures-util", "tls"] # websocket+incoming also enables incoming TLS support as it's free
 
 logging = ["rand", "env_logger"]
+systemd = ["nix"]
 
 [dev-dependencies]
 serde_json = "1.0"

@@ -3,10 +3,17 @@ use anyhow::Result;
 use die::{die, Die};
 use log::{debug, error, info};
 use serde_derive::Deserialize;
-use std::{ffi::OsString, fs::File, io::Read, iter::Iterator, net::SocketAddr, path::Path, sync::Arc};
-use tokio::task::JoinHandle;
+use std::{
+    ffi::OsString,
+    fs::File,
+    io::Read,
+    iter::Iterator,
+    net::{SocketAddr, UdpSocket},
+    path::Path,
+    sync::Arc,
+};
+use tokio::{net::TcpListener, task::JoinHandle};
 use xmpp_proxy::common::certs_key::CertsKey;
-
 #[cfg(feature = "outgoing")]
 use xmpp_proxy::{common::outgoing::OutgoingConfig, outgoing::spawn_outgoing_listener};
 
@@ -128,13 +135,53 @@ async fn main() {
         die!("log_level or log_style defined in config but logging disabled at compile-time");
     }
 
+    let mut incoming_listen = Vec::new();
+    for a in main_config.incoming_listen.iter() {
+        incoming_listen.push(TcpListener::bind(a).await.die("cannot listen on port/interface"));
+    }
+    let mut quic_listen = Vec::new();
+    for a in main_config.quic_listen.iter() {
+        quic_listen.push(UdpSocket::bind(a).die("cannot listen on port/interface"));
+    }
+    let mut outgoing_listen = Vec::new();
+    for a in main_config.outgoing_listen.iter() {
+        outgoing_listen.push(TcpListener::bind(a).await.die("cannot listen on port/interface"));
+    }
+
+    #[cfg(feature = "nix")]
+    if let Ok(fds) = xmpp_proxy::systemd::receive_descriptors_with_names(true) {
+        use xmpp_proxy::systemd::Listener;
+        for fd in fds {
+            match fd.listener() {
+                Listener::Tcp(tcp_listener) => {
+                    let tcp_listener = TcpListener::from_std(tcp_listener()).die("cannot open systemd TcpListener");
+                    if let Some(name) = fd.name().map(|n| n.to_ascii_lowercase()) {
+                        if name.starts_with("in") {
+                            incoming_listen.push(tcp_listener);
+                        } else if name.starts_with("out") {
+                            outgoing_listen.push(tcp_listener);
+                        } else {
+                            die!("systemd socket name must start with 'in' or 'out' but is '{}'", name);
+                        }
+                    } else {
+                        // what to do here... for now we will require names
+                        // todo: possibly in future if local_addr is localhost or private ranges assume outgoing, otherwise incoming?
+                        die!("systemd TCP socket activation requires name that starts with 'in' or 'out'");
+                    }
+                }
+                Listener::Udp(udp_socket) => quic_listen.push(udp_socket()),
+                _ => continue,
+            }
+        }
+    }
+
     #[cfg(feature = "incoming")]
     let config = main_config.get_cloneable_cfg();
 
     let certs_key = Arc::new(CertsKey::new(main_config.certs_key()));
 
     let mut handles: Vec<JoinHandle<Result<()>>> = Vec::new();
-    if !main_config.incoming_listen.is_empty() {
+    if !incoming_listen.is_empty() {
         #[cfg(all(any(feature = "tls", feature = "websocket"), feature = "incoming"))]
         {
             use xmpp_proxy::{
@@ -145,14 +192,14 @@ async fn main() {
                 die!("one of c2s_target/s2s_target must be defined if incoming_listen is non-empty");
             }
             let acceptor = tls_acceptor(server_config(certs_key.clone()).die("invalid cert/key ?"));
-            for listener in main_config.incoming_listen.iter() {
-                handles.push(spawn_tls_listener(listener.parse().die("invalid listener address"), config.clone(), acceptor.clone()));
+            for listener in incoming_listen {
+                handles.push(spawn_tls_listener(listener, config.clone(), acceptor.clone()));
             }
         }
         #[cfg(not(all(any(feature = "tls", feature = "websocket"), feature = "incoming")))]
         die!("incoming_listen non-empty but (tls or websocket) or (s2s-incoming and c2s-incoming) disabled at compile-time");
     }
-    if !main_config.quic_listen.is_empty() {
+    if !quic_listen.is_empty() {
         #[cfg(all(feature = "quic", feature = "incoming"))]
         {
             use xmpp_proxy::{
@@ -163,19 +210,19 @@ async fn main() {
                 die!("one of c2s_target/s2s_target must be defined if quic_listen is non-empty");
             }
             let quic_config = quic_server_config(server_config(certs_key.clone()).die("invalid cert/key ?"));
-            for listener in main_config.quic_listen.iter() {
-                handles.push(spawn_quic_listener(listener.parse().die("invalid listener address"), config.clone(), quic_config.clone()));
+            for listener in quic_listen {
+                handles.push(spawn_quic_listener(listener, config.clone(), quic_config.clone()));
             }
         }
         #[cfg(not(all(feature = "quic", feature = "incoming")))]
         die!("quic_listen non-empty but quic or (s2s-incoming and c2s-incoming) disabled at compile-time");
     }
-    if !main_config.outgoing_listen.is_empty() {
+    if !outgoing_listen.is_empty() {
         #[cfg(feature = "outgoing")]
         {
             let outgoing_cfg = main_config.get_outgoing_cfg(certs_key.clone());
-            for listener in main_config.outgoing_listen.iter() {
-                handles.push(spawn_outgoing_listener(listener.parse().die("invalid listener address"), outgoing_cfg.clone()));
+            for listener in outgoing_listen {
+                handles.push(spawn_outgoing_listener(listener, outgoing_cfg.clone()));
             }
         }
         #[cfg(not(feature = "outgoing"))]

@@ -7,12 +7,13 @@ use anyhow::Result;
 use die::Die;
 use futures::StreamExt;
 use log::{error, info};
-use quinn::ServerConfig;
-use std::{net::SocketAddr, sync::Arc};
+use quinn::{Endpoint, EndpointConfig, ServerConfig};
+use std::{net::UdpSocket, sync::Arc};
 use tokio::task::JoinHandle;
 
-pub fn spawn_quic_listener(local_addr: SocketAddr, config: CloneableConfig, server_config: ServerConfig) -> JoinHandle<Result<()>> {
-    let (_endpoint, mut incoming) = quinn::Endpoint::server(server_config, local_addr).die("cannot listen on port/interface");
+pub fn spawn_quic_listener(udp_socket: UdpSocket, config: CloneableConfig, server_config: ServerConfig) -> JoinHandle<Result<()>> {
+    let local_addr = udp_socket.local_addr().die("cannot get local_addr for quic socket");
+    let (_endpoint, mut incoming) = Endpoint::new(EndpointConfig::default(), Some(server_config), udp_socket).die("cannot listen on port/interface");
     tokio::spawn(async move {
         // when could this return None, do we quit?
         while let Some(incoming_conn) = incoming.next().await {
