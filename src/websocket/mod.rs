@@ -58,9 +58,6 @@ pub fn from_ws(stanza: String) -> String {
 }
 
 pub fn to_ws_new(buf: &[u8], mut end_of_first_tag: usize, is_c2s: bool) -> Result<String> {
-    if end_of_first_tag == 0 {
-        return Ok(String::from_utf8(buf.to_vec())?);
-    }
     if buf.starts_with(b"<stream:stream ") {
         let buf = String::from_utf8(buf.to_vec())?;
         return Ok(buf
@@ -69,6 +66,9 @@ pub fn to_ws_new(buf: &[u8], mut end_of_first_tag: usize, is_c2s: bool) -> Resul
             .replace("jabber:client", "urn:ietf:params:xml:ns:xmpp-framing")
             .replace('>', "/>"));
     }
+    if end_of_first_tag == 0 {
+        return Ok(String::from_utf8(buf.to_vec())?);
+    }
     if buf.starts_with(b"</stream:stream") {
         return Ok(r#"<close xmlns="urn:ietf:params:xml:ns:xmpp-framing" />"#.to_string());
     }
@@ -76,14 +76,28 @@ pub fn to_ws_new(buf: &[u8], mut end_of_first_tag: usize, is_c2s: bool) -> Resul
         end_of_first_tag -= 1;
     }
     let first_tag_bytes = &buf[0..end_of_first_tag];
-    if first_tag_bytes.first_index_of(b" xmlns='").is_ok() || first_tag_bytes.first_index_of(br#" xmlns=""#).is_ok() {
+    let has_xmlns = first_tag_bytes.first_index_of(b" xmlns='").is_ok() || first_tag_bytes.first_index_of(br#" xmlns=""#).is_ok();
+    let has_xmlns_stream = !first_tag_bytes.contains_seq(b"stream:") || (first_tag_bytes.first_index_of(b" xmlns:stream='").is_ok() || first_tag_bytes.first_index_of(br#" xmlns:stream=""#).is_ok());
+    if has_xmlns && has_xmlns_stream {
         // already set, do nothing
         return Ok(String::from_utf8(buf.to_vec())?);
     }
     // otherwise add proper xmlns before end of tag
-    let mut ret = String::with_capacity(buf.len() + 22);
+    let mut capacity = 0;
+    if !has_xmlns {
+        capacity += 22;
+    }
+    if !has_xmlns_stream {
+        capacity += 48;
+    }
+    let mut ret = String::with_capacity(buf.len() + capacity);
     ret.push_str(std::str::from_utf8(first_tag_bytes)?);
-    ret.push_str(if is_c2s { " xmlns='jabber:client'" } else { " xmlns='jabber:server'" });
+    if !has_xmlns {
+        ret.push_str(if is_c2s { " xmlns='jabber:client'" } else { " xmlns='jabber:server'" });
+    }
+    if !has_xmlns_stream {
+        ret.push_str(" xmlns:stream='http://etherx.jabber.org/streams'");
+    }
     ret.push_str(std::str::from_utf8(&buf[end_of_first_tag..])?);
     Ok(ret)
 }
@@ -95,7 +109,10 @@ use crate::{
 
 #[cfg(test)]
 mod tests {
-    use crate::websocket::*;
+    use crate::{
+        stanzafilter::{StanzaFilter, StanzaReader},
+        websocket::*,
+    };
     use std::io::Cursor;
 
     #[test]
@@ -128,6 +145,7 @@ mod tests {
             to_vec_eoft(
                 StanzaReader(Cursor::new(
                     br###"
+            <stream:stream id='719668c2-f5ba-4243-8042-ce6b2cece11b' xmlns='jabber:client' version='1.0' xml:lang='en' from='test.moparisthe.best' xmlns:stream='http://etherx.jabber.org/streams'>
             <stream:stream xmlns="jabber:client" version="1.0" to="test.moparisthe.best" xml:lang="en">
             </stream:stream>
             <iq type='result' id='6ef4a4b7-7f2b-462b-9176-83ec706c625e' to='test1@test.moparisthe.best/gajim.12S9XM42'/>
@@ -140,10 +158,11 @@ mod tests {
             )
             .await?,
             vec![
+                r#"<open id='719668c2-f5ba-4243-8042-ce6b2cece11b' xmlns='urn:ietf:params:xml:ns:xmpp-framing' version='1.0' xml:lang='en' from='test.moparisthe.best' xmlns:stream='http://etherx.jabber.org/streams'/>"#,
                 r#"<open xmlns="urn:ietf:params:xml:ns:xmpp-framing" version="1.0" to="test.moparisthe.best" xml:lang="en"/>"#,
                 r#"<close xmlns="urn:ietf:params:xml:ns:xmpp-framing" />"#,
                 r#"<iq type='result' id='6ef4a4b7-7f2b-462b-9176-83ec706c625e' to='test1@test.moparisthe.best/gajim.12S9XM42' xmlns='jabber:client'/>"#,
-                r#"<stream:features xmlns='jabber:client'><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>PLAIN</mechanism><mechanism>SCRAM-SHA-1</mechanism></mechanisms></stream:features>"#,
+                r#"<stream:features xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>PLAIN</mechanism><mechanism>SCRAM-SHA-1</mechanism></mechanisms></stream:features>"#,
                 r#"<iq type='result' id='7b0d57bb-6446-4701-92e5-8b9354bbfabe' xmlns='jabber:client'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'><jid>test1@test.moparisthe.best/gajim.12S9XM42</jid></bind></iq>"#,
                 r#"<iq type='result' id='7b0d57bb-6446-4701-92e5-8b9354bb>fabe' xmlns='jabber:client'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'><jid>test1@test.moparisthe.best/gajim.12S9XM42</jid></bind></iq>"#,
             ]

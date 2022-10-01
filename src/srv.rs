@@ -831,7 +831,7 @@ pub fn digest(algorithm: &'static Algorithm, buf: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use crate::srv::*;
-    use std::path::PathBuf;
+    use std::{fs::File, io::Read, path::PathBuf};
 
     fn valid_posh(posh: &[u8], cert: &[u8]) -> bool {
         let posh: PoshJson = serde_json::from_slice(posh).unwrap();
