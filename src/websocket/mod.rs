@@ -1,7 +1,14 @@
 use anyhow::Result;
 use futures::StreamExt;
 use futures_util::stream::{SplitSink, SplitStream};
-use tokio_tungstenite::{tungstenite::protocol::WebSocketConfig, WebSocketStream};
+use tokio_tungstenite::{
+    tungstenite::{
+        handshake::server::{Request, Response},
+        http::header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        protocol::WebSocketConfig,
+    },
+    WebSocketStream,
+};
 
 #[cfg(feature = "incoming")]
 pub mod incoming;
@@ -29,8 +36,16 @@ impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite> AsyncReadAndWrite for T {}
 
 pub async fn incoming_websocket_connection(stream: Box<dyn AsyncReadAndWrite + Unpin + Send>, max_stanza_size_bytes: usize) -> Result<(StanzaRead, StanzaWrite)> {
     // accept the websocket
-    // todo: check SEC_WEBSOCKET_PROTOCOL or ORIGIN ?
-    let stream = tokio_tungstenite::accept_async_with_config(stream, ws_cfg(max_stanza_size_bytes)).await?;
+    let stream = tokio_tungstenite::accept_hdr_async_with_config(
+        stream,
+        |_request: &Request, mut response: Response| {
+            // todo: check SEC_WEBSOCKET_PROTOCOL or ORIGIN ?
+            response.headers_mut().append(ACCESS_CONTROL_ALLOW_ORIGIN, "*".parse().expect("known to be good value"));
+            Ok(response)
+        },
+        ws_cfg(max_stanza_size_bytes),
+    )
+    .await?;
 
     let (in_wr, in_rd) = stream.split();
 
