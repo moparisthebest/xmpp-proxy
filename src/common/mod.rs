@@ -6,6 +6,7 @@ use crate::{
 };
 use anyhow::{bail, Result};
 use log::{info, trace};
+#[cfg(feature = "rustls")]
 use rustls::{
     sign::{RsaSigningKey, SigningKey},
     Certificate, PrivateKey,
@@ -21,6 +22,7 @@ pub mod outgoing;
 #[cfg(any(feature = "rustls-native-certs", feature = "webpki-roots"))]
 pub mod ca_roots;
 
+#[cfg(feature = "rustls")]
 pub mod certs_key;
 
 pub const IN_BUFFER_SIZE: usize = 8192;

@@ -1,3 +1,9 @@
+[workspace]
+members = [
+    "fuzz",
+    "."
+]
+
 [package]
 name = "xmpp-proxy"
 version = "1.0.0"
