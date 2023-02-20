@@ -5,31 +5,31 @@ use crate::{
 };
 use anyhow::Result;
 use die::Die;
-use futures::StreamExt;
 use log::{error, info};
-use quinn::{Endpoint, EndpointConfig, ServerConfig};
+use quinn::{Endpoint, EndpointConfig, ServerConfig, TokioRuntime};
 use std::{net::UdpSocket, sync::Arc};
 use tokio::task::JoinHandle;
 
 pub fn spawn_quic_listener(udp_socket: UdpSocket, config: CloneableConfig, server_config: ServerConfig) -> JoinHandle<Result<()>> {
     let local_addr = udp_socket.local_addr().die("cannot get local_addr for quic socket");
-    let (_endpoint, mut incoming) = Endpoint::new(EndpointConfig::default(), Some(server_config), udp_socket).die("cannot listen on port/interface");
+    let incoming = Endpoint::new(EndpointConfig::default(), Some(server_config), udp_socket, TokioRuntime).die("cannot listen on port/interface");
     tokio::spawn(async move {
         // when could this return None, do we quit?
-        while let Some(incoming_conn) = incoming.next().await {
+        while let Some(incoming_conn) = incoming.accept().await {
             let config = config.clone();
             tokio::spawn(async move {
-                if let Ok(mut new_conn) = incoming_conn.await {
-                    let client_addr = Context::new("quic-in", new_conn.connection.remote_address());
+                if let Ok(new_conn) = incoming_conn.await {
+                    let client_addr = Context::new("quic-in", new_conn.remote_address());
 
+                    let new_conn = Arc::new(new_conn);
                     #[cfg(feature = "s2s-incoming")]
-                    let server_certs = ServerCerts::Quic(new_conn.connection);
+                    let server_certs = ServerCerts::Quic(new_conn.clone());
                     #[cfg(not(feature = "s2s-incoming"))]
                     let server_certs = ();
 
                     info!("{} connected new connection", client_addr.log_from());
 
-                    while let Some(Ok((wrt, rd))) = new_conn.bi_streams.next().await {
+                    while let Ok((wrt, rd)) = new_conn.accept_bi().await {
                         let config = config.clone();
                         let mut client_addr = client_addr.clone();
                         let server_certs = server_certs.clone();

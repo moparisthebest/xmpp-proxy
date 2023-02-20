@@ -47,7 +47,7 @@ pub type ServerCerts = ();
 pub enum ServerCerts {
     Tls(&'static ServerConnection),
     #[cfg(feature = "quic")]
-    Quic(quinn::Connection),
+    Quic(Arc<quinn::Connection>),
 }
 
 #[cfg(feature = "s2s-incoming")]

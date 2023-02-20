@@ -15,7 +15,7 @@ pub async fn quic_connect(target: SocketAddr, server_name: &str, config: Outgoin
     endpoint.set_default_client_config(quinn::ClientConfig::new(client_cfg));
 
     // connect to server
-    let quinn::NewConnection { connection, .. } = endpoint.connect(target, server_name)?.await?;
+    let connection = endpoint.connect(target, server_name)?.await?;
     trace!("quic connected: addr={}", connection.remote_address());
 
     let (wrt, rd) = connection.open_bi().await?;
