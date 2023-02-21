@@ -41,7 +41,7 @@ pub fn c2s(is_c2s: bool) -> &'static str {
     }
 }
 
-pub async fn first_bytes_match(stream: &tokio::net::TcpStream, p: &mut [u8], matcher: fn(&[u8]) -> bool) -> anyhow::Result<bool> {
+pub async fn peek_bytes<'a>(stream: &tokio::net::TcpStream, p: &'a mut [u8]) -> anyhow::Result<&'a [u8]> {
     // sooo... I don't think peek here can be used for > 1 byte without this timer craziness... can it?
     let len = p.len();
     // wait up to 10 seconds until len bytes have been read
@@ -61,7 +61,11 @@ pub async fn first_bytes_match(stream: &tokio::net::TcpStream, p: &mut [u8], mat
         }
     }
 
-    Ok(matcher(p))
+    Ok(p)
+}
+
+pub async fn first_bytes_match(stream: &tokio::net::TcpStream, p: &mut [u8], matcher: fn(&[u8]) -> bool) -> anyhow::Result<bool> {
+    Ok(matcher(peek_bytes(stream, p).await?))
 }
 
 pub async fn stream_preamble(in_rd: &mut StanzaRead, in_wr: &mut StanzaWrite, client_addr: &'_ str, in_filter: &mut StanzaFilter) -> Result<(Vec<u8>, bool)> {
