@@ -5,13 +5,18 @@ use crate::{
     stanzafilter::StanzaFilter,
 };
 use anyhow::{bail, Result};
+use async_trait::async_trait;
 use log::{info, trace};
 #[cfg(feature = "rustls")]
 use rustls::{
     sign::{RsaSigningKey, SigningKey},
     Certificate, PrivateKey,
 };
-use std::{fs::File, io, io::BufReader, sync::Arc};
+use std::{fs::File, io, sync::Arc};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, BufReader, BufStream},
+    net::TcpStream,
+};
 
 #[cfg(feature = "incoming")]
 pub mod incoming;
@@ -41,31 +46,128 @@ pub fn c2s(is_c2s: bool) -> &'static str {
     }
 }
 
-pub async fn peek_bytes<'a>(stream: &tokio::net::TcpStream, p: &'a mut [u8]) -> anyhow::Result<&'a [u8]> {
-    // sooo... I don't think peek here can be used for > 1 byte without this timer craziness... can it?
-    let len = p.len();
-    // wait up to 10 seconds until len bytes have been read
-    use std::time::{Duration, Instant};
-    let duration = Duration::from_secs(10);
-    let now = Instant::now();
-    loop {
-        let n = stream.peek(p).await?;
-        if n == len {
-            break; // success
-        }
-        if n == 0 {
-            bail!("not enough bytes");
-        }
-        if Instant::now() - now > duration {
-            bail!("less than {} bytes in 10 seconds, closed connection?", len);
+pub trait Split: Sized {
+    type ReadHalf: AsyncRead + Unpin;
+    type WriteHalf: AsyncWrite + Unpin;
+
+    fn combine(read_half: Self::ReadHalf, write_half: Self::WriteHalf) -> Result<Self>;
+
+    fn split(self) -> (Self::ReadHalf, Self::WriteHalf);
+}
+
+impl Split for TcpStream {
+    type ReadHalf = tokio::net::tcp::OwnedReadHalf;
+    type WriteHalf = tokio::net::tcp::OwnedWriteHalf;
+
+    fn combine(read_half: Self::ReadHalf, write_half: Self::WriteHalf) -> Result<Self> {
+        Ok(read_half.reunite(write_half)?)
+    }
+
+    fn split(self) -> (Self::ReadHalf, Self::WriteHalf) {
+        self.into_split()
+    }
+}
+
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> Split for BufStream<T> {
+    type ReadHalf = tokio::io::ReadHalf<BufStream<T>>;
+    type WriteHalf = tokio::io::WriteHalf<BufStream<T>>;
+
+    fn combine(read_half: Self::ReadHalf, write_half: Self::WriteHalf) -> Result<Self> {
+        if read_half.is_pair_of(&write_half) {
+            Ok(read_half.unsplit(write_half))
+        } else {
+            bail!("non-matching read/write half")
         }
     }
 
-    Ok(p)
+    fn split(self) -> (Self::ReadHalf, Self::WriteHalf) {
+        tokio::io::split(self)
+    }
 }
 
-pub async fn first_bytes_match(stream: &tokio::net::TcpStream, p: &mut [u8], matcher: fn(&[u8]) -> bool) -> anyhow::Result<bool> {
-    Ok(matcher(peek_bytes(stream, p).await?))
+#[async_trait]
+pub trait Peek {
+    async fn peek_bytes<'a>(&mut self, p: &'a mut [u8]) -> anyhow::Result<&'a [u8]>;
+
+    async fn first_bytes_match<'a>(&mut self, p: &'a mut [u8], matcher: fn(&'a [u8]) -> bool) -> anyhow::Result<bool> {
+        Ok(matcher(self.peek_bytes(p).await?))
+    }
+}
+
+#[async_trait]
+impl Peek for TcpStream {
+    async fn peek_bytes<'a>(&mut self, p: &'a mut [u8]) -> anyhow::Result<&'a [u8]> {
+        // sooo... I don't think peek here can be used for > 1 byte without this timer craziness... can it?
+        let len = p.len();
+        // wait up to 10 seconds until len bytes have been read
+        use std::time::{Duration, Instant};
+        let duration = Duration::from_secs(10);
+        let now = Instant::now();
+        loop {
+            let n = self.peek(p).await?;
+            if n == len {
+                return Ok(p); // success
+            }
+            if n == 0 {
+                bail!("not enough bytes");
+            }
+            if Instant::now() - now > duration {
+                bail!("less than {} bytes in 10 seconds, closed connection?", len);
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> Peek for BufStream<T> {
+    async fn peek_bytes<'a>(&mut self, p: &'a mut [u8]) -> anyhow::Result<&'a [u8]> {
+        // sooo... I don't think peek here can be used for > 1 byte without this timer craziness... can it?
+        let len = p.len();
+        // wait up to 10 seconds until len bytes have been read
+        use std::time::{Duration, Instant};
+        use tokio::io::AsyncBufReadExt;
+        let duration = Duration::from_secs(10);
+        let now = Instant::now();
+        loop {
+            let buf = self.fill_buf().await?;
+            if buf.len() >= len {
+                p.copy_from_slice(&buf[0..len]);
+                return Ok(p); // success
+            }
+            if buf.is_empty() {
+                bail!("not enough bytes");
+            }
+            if Instant::now() - now > duration {
+                bail!("less than {} bytes in 10 seconds, closed connection?", len);
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl<T: AsyncRead + Unpin + Send> Peek for BufReader<T> {
+    async fn peek_bytes<'a>(&mut self, p: &'a mut [u8]) -> anyhow::Result<&'a [u8]> {
+        // sooo... I don't think peek here can be used for > 1 byte without this timer craziness... can it?
+        let len = p.len();
+        // wait up to 10 seconds until len bytes have been read
+        use std::time::{Duration, Instant};
+        use tokio::io::AsyncBufReadExt;
+        let duration = Duration::from_secs(10);
+        let now = Instant::now();
+        loop {
+            let buf = self.fill_buf().await?;
+            if buf.len() >= len {
+                p.copy_from_slice(&buf[0..len]);
+                return Ok(p); // success
+            }
+            if buf.is_empty() {
+                bail!("not enough bytes");
+            }
+            if Instant::now() - now > duration {
+                bail!("less than {} bytes in 10 seconds, closed connection?", len);
+            }
+        }
+    }
 }
 
 pub async fn stream_preamble(in_rd: &mut StanzaRead, in_wr: &mut StanzaWrite, client_addr: &'_ str, in_filter: &mut StanzaFilter) -> Result<(Vec<u8>, bool)> {
@@ -130,7 +232,7 @@ pub async fn shuffle_rd_wr_filter_only(
 pub fn read_certified_key(tls_key: &str, tls_cert: &str) -> Result<rustls::sign::CertifiedKey> {
     use rustls_pemfile::{certs, read_all, Item};
 
-    let tls_key = read_all(&mut BufReader::new(File::open(tls_key)?))
+    let tls_key = read_all(&mut io::BufReader::new(File::open(tls_key)?))
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))?
         .into_iter()
         .flat_map(|item| match item {
@@ -142,7 +244,7 @@ pub fn read_certified_key(tls_key: &str, tls_cert: &str) -> Result<rustls::sign:
         .next()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))?;
 
-    let tls_certs = certs(&mut BufReader::new(File::open(tls_cert)?))
+    let tls_certs = certs(&mut io::BufReader::new(File::open(tls_cert)?))
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid cert"))
         .map(|mut certs| certs.drain(..).map(Certificate).collect())?;
 

@@ -1,5 +1,5 @@
 use crate::{
-    common::{first_bytes_match, outgoing::OutgoingConfig, shuffle_rd_wr_filter_only, stream_preamble},
+    common::{outgoing::OutgoingConfig, shuffle_rd_wr_filter_only, stream_preamble, Peek},
     context::Context,
     in_out::{StanzaRead, StanzaWrite},
     slicesubsequence::SliceSubsequence,
@@ -10,13 +10,13 @@ use anyhow::Result;
 use log::{error, info};
 use tokio::{net::TcpListener, task::JoinHandle};
 
-async fn handle_outgoing_connection(stream: tokio::net::TcpStream, client_addr: &mut Context<'_>, config: OutgoingConfig) -> Result<()> {
+async fn handle_outgoing_connection(mut stream: tokio::net::TcpStream, client_addr: &mut Context<'_>, config: OutgoingConfig) -> Result<()> {
     info!("{} connected", client_addr.log_from());
 
     let mut in_filter = StanzaFilter::new(config.max_stanza_size_bytes);
 
     #[cfg(feature = "websocket")]
-    let (mut in_rd, mut in_wr) = if first_bytes_match(&stream, &mut in_filter.buf[0..3], |p| p == b"GET").await? {
+    let (mut in_rd, mut in_wr) = if stream.first_bytes_match(&mut in_filter.buf[0..3], |p| p == b"GET").await? {
         crate::websocket::incoming_websocket_connection(Box::new(stream), config.max_stanza_size_bytes).await?
     } else {
         let (in_rd, in_wr) = tokio::io::split(stream);

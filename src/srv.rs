@@ -20,6 +20,7 @@ use std::{
     cmp::Ordering,
     convert::TryFrom,
     net::{IpAddr, SocketAddr},
+    sync::Arc,
 };
 use tokio_rustls::webpki::{DnsName, DnsNameRef};
 #[cfg(feature = "websocket")]
@@ -463,7 +464,7 @@ pub async fn srv_connect(
         bail!("outgoing s2s connection but s2s-outgoing disabled at compile-time");
     }
     let (srvs, cert_verifier) = get_xmpp_connections(domain, is_c2s).await?;
-    let config = config.with_custom_certificate_verifier(is_c2s, cert_verifier);
+    let config = config.with_custom_certificate_verifier(is_c2s, Arc::new(cert_verifier));
     for srv in srvs {
         let connect = srv.connect(domain, stream_open, in_filter, client_addr, config.clone()).await;
         if connect.is_err() {

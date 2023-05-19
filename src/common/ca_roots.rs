@@ -9,7 +9,7 @@ lazy_static::lazy_static! {
     pub static ref TLS_SERVER_ROOTS: TlsServerTrustAnchors<'static> = {
         // we need these to stick around for 'static, this is only called once so no problem
         let certs = Box::leak(Box::new(rustls_native_certs::load_native_certs().expect("could not load platform certs")));
-        let root_cert_store = Box::leak(Box::new(Vec::new()));
+        let root_cert_store: &mut Box<Vec<_>> = Box::leak(Box::default());
         for cert in certs {
             // some system CAs are invalid, ignore those
             if let Ok(ta) = TrustAnchor::try_from_cert_der(&cert.0) {

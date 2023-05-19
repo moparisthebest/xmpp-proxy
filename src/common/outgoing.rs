@@ -1,8 +1,5 @@
-use crate::{
-    common::{certs_key::CertsKey, ALPN_XMPP_CLIENT, ALPN_XMPP_SERVER},
-    verify::XmppServerCertVerifier,
-};
-use rustls::ClientConfig;
+use crate::common::{certs_key::CertsKey, ALPN_XMPP_CLIENT, ALPN_XMPP_SERVER};
+use rustls::{client::ServerCertVerifier, ClientConfig};
 use std::sync::Arc;
 use tokio_rustls::TlsConnector;
 
@@ -13,16 +10,13 @@ pub struct OutgoingConfig {
 }
 
 impl OutgoingConfig {
-    pub fn with_custom_certificate_verifier(&self, is_c2s: bool, cert_verifier: XmppServerCertVerifier) -> OutgoingVerifierConfig {
+    pub fn with_custom_certificate_verifier(&self, is_c2s: bool, cert_verifier: Arc<dyn ServerCertVerifier>) -> OutgoingVerifierConfig {
         let config = match is_c2s {
             false => ClientConfig::builder()
                 .with_safe_defaults()
-                .with_custom_certificate_verifier(Arc::new(cert_verifier))
+                .with_custom_certificate_verifier(cert_verifier)
                 .with_client_cert_resolver(self.certs_key.clone()),
-            _ => ClientConfig::builder()
-                .with_safe_defaults()
-                .with_custom_certificate_verifier(Arc::new(cert_verifier))
-                .with_no_client_auth(),
+            _ => ClientConfig::builder().with_safe_defaults().with_custom_certificate_verifier(cert_verifier).with_no_client_auth(),
         };
 
         let mut config_alpn = config.clone();

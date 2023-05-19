@@ -152,7 +152,7 @@ async fn open_incoming(
     is_c2s: bool,
     in_filter: &mut StanzaFilter,
 ) -> Result<(ReadHalf<tokio::net::TcpStream>, WriteHalf<tokio::net::TcpStream>)> {
-    let target = if is_c2s {
+    let target: Option<SocketAddr> = if is_c2s {
         #[cfg(not(feature = "c2s-incoming"))]
         bail!("incoming c2s connection but lacking compile-time support");
         #[cfg(feature = "c2s-incoming")]
@@ -162,8 +162,8 @@ async fn open_incoming(
         bail!("incoming s2s connection but lacking compile-time support");
         #[cfg(feature = "s2s-incoming")]
         config.s2s_target
-    }
-    .ok_or_else(|| anyhow!("incoming connection but `{}_target` not defined", c2s(is_c2s)))?;
+    };
+    let target = target.ok_or_else(|| anyhow!("incoming connection but `{}_target` not defined", c2s(is_c2s)))?;
     client_addr.set_to_addr(target);
 
     let out_stream = tokio::net::TcpStream::connect(target).await?;

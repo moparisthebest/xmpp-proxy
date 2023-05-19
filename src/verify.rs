@@ -2,7 +2,7 @@ use crate::{
     common::ca_roots::TLS_SERVER_ROOTS,
     srv::{digest, Posh},
 };
-use log::debug;
+use log::{debug, trace};
 use ring::digest::SHA256;
 use rustls::{
     client::{ServerCertVerified, ServerCertVerifier},
@@ -41,6 +41,16 @@ pub fn pki_error(error: webpki::Error) -> Error {
     }
 }
 
+pub fn verify_is_valid_tls_server_cert<'a>(end_entity: &'a Certificate, intermediates: &'a [Certificate], now: SystemTime) -> Result<webpki::EndEntityCert<'a>, Error> {
+    // from WebPkiVerifier, validates CA trusted cert
+    let (cert, chain) = prepare(end_entity, intermediates)?;
+    let webpki_now = webpki::Time::try_from(now).map_err(|_| Error::FailedToGetCurrentTime)?;
+
+    cert.verify_is_valid_tls_server_cert(SUPPORTED_SIG_ALGS, &TLS_SERVER_ROOTS, &chain, webpki_now).map_err(pki_error)?;
+
+    Ok(cert)
+}
+
 pub struct AllowAnonymousOrAnyCert;
 
 impl ClientCertVerifier for AllowAnonymousOrAnyCert {
@@ -62,9 +72,9 @@ impl ClientCertVerifier for AllowAnonymousOrAnyCert {
     }
 }
 
-type CertChainAndRoots<'a, 'b> = (webpki::EndEntityCert<'a>, Vec<&'a [u8]>);
+type CertChainAndRoots<'a> = (webpki::EndEntityCert<'a>, Vec<&'a [u8]>);
 
-fn prepare<'a, 'b>(end_entity: &'a Certificate, intermediates: &'a [Certificate]) -> Result<CertChainAndRoots<'a, 'b>, Error> {
+fn prepare<'a>(end_entity: &'a Certificate, intermediates: &'a [Certificate]) -> Result<CertChainAndRoots<'a>, Error> {
     // EE cert must appear first.
     let cert = webpki::EndEntityCert::try_from(end_entity.0.as_ref()).map_err(pki_error)?;
 
@@ -88,8 +98,8 @@ impl XmppServerCertVerifier {
     pub fn verify_cert(&self, end_entity: &Certificate, intermediates: &[Certificate], now: SystemTime) -> Result<ServerCertVerified, Error> {
         if !self.sha256_pinnedpubkeys.is_empty() {
             let cert = webpki::TrustAnchor::try_from_cert_der(end_entity.0.as_ref()).map_err(pki_error)?;
-            println!("spki.len(): {}", cert.spki.len());
-            println!("spki: {:?}", cert.spki);
+            trace!("spki.len(): {}", cert.spki.len());
+            trace!("spki: {:?}", cert.spki);
             // todo: what is wrong with webpki? it returns *almost* the right answer but missing these leading bytes:
             // guess I'll open an issue... (I assume this is some type of algorithm identifying header or something)
             let mut pubkey: Vec<u8> = vec![48, 130, 1, 34];
@@ -111,11 +121,8 @@ impl XmppServerCertVerifier {
                 debug!("posh failed for {:?}", self.names.first());
             }
         }
-        // from WebPkiVerifier, validates CA trusted cert
-        let (cert, chain) = prepare(end_entity, intermediates)?;
-        let webpki_now = webpki::Time::try_from(now).map_err(|_| Error::FailedToGetCurrentTime)?;
-
-        cert.verify_is_valid_tls_server_cert(SUPPORTED_SIG_ALGS, &TLS_SERVER_ROOTS, &chain, webpki_now).map_err(pki_error)?;
+        // validates CA trusted cert
+        let cert = verify_is_valid_tls_server_cert(end_entity, intermediates, now)?;
 
         for name in &self.names {
             if cert.verify_is_valid_for_dns_name(name.as_ref()).is_ok() {

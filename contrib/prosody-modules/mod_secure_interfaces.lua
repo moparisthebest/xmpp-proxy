@@ -20,8 +20,20 @@ end
 
 module:hook("stream-features", function (event)
 	mark_secure(event, "c2s_unauthed");
-end, 2500);
+end, 25000);
 
 module:hook("s2s-stream-features", function (event)
 	mark_secure(event, "s2sin_unauthed");
-end, 2500);
+end, 25000);
+
+-- todo: is this the best place to do this hook?
+-- this hook marks incoming s2s as secure so we offer SASL EXTERNAL on it
+module:hook("s2s-stream-features", function(event)
+	local session, features = event.origin, event.features;
+	if session.type == "s2sin_unauthed" then
+        module:log("debug", "marking hook session.type '%s' secure with validated cert!", session.type);
+	    session.secure = true;
+    	session.cert_chain_status = "valid";
+    	session.cert_identity_status = "valid";
+    end
+end, 3000);

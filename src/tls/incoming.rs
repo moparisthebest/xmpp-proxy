@@ -1,8 +1,7 @@
 use crate::{
     common::{
-        first_bytes_match,
         incoming::{shuffle_rd_wr_filter, CloneableConfig, ServerCerts},
-        to_str, IN_BUFFER_SIZE,
+        to_str, Peek, Split, IN_BUFFER_SIZE,
     },
     context::Context,
     in_out::{StanzaRead, StanzaWrite},
@@ -14,7 +13,7 @@ use log::{error, info, trace};
 use rustls::{ServerConfig, ServerConnection};
 use std::{net::SocketAddr, sync::Arc};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufStream},
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufStream},
     net::TcpListener,
     task::JoinHandle,
 };
@@ -41,7 +40,13 @@ pub fn spawn_tls_listener(listener: TcpListener, config: CloneableConfig, accept
     })
 }
 
-async fn handle_tls_connection(mut stream: tokio::net::TcpStream, client_addr: &mut Context<'_>, local_addr: SocketAddr, config: CloneableConfig, acceptor: TlsAcceptor) -> Result<()> {
+pub async fn handle_tls_connection<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + Peek + Split + 'static>(
+    mut stream: S,
+    client_addr: &mut Context<'_>,
+    local_addr: SocketAddr,
+    config: CloneableConfig,
+    acceptor: TlsAcceptor,
+) -> Result<()> {
     info!("{} connected", client_addr.log_from());
 
     let mut in_filter = StanzaFilter::new(config.max_stanza_size_bytes);
@@ -52,16 +57,19 @@ async fn handle_tls_connection(mut stream: tokio::net::TcpStream, client_addr: &
      *
      * could just check the leading 0x16 is TLS, it would *probably* be ok ?
      */
-    let direct_tls = first_bytes_match(&stream, &mut in_filter.buf[0..3], |p| p[0] == 0x16 && p[1] == 0x03 && p[2] <= 0x03).await?;
+    let direct_tls = stream.first_bytes_match(&mut in_filter.buf[0..3], |p| p[0] == 0x16 && p[1] == 0x03 && p[2] <= 0x03).await?;
 
     client_addr.set_proto(if direct_tls { "directtls-in" } else { "starttls-in" });
     info!("{} direct_tls sniffed", client_addr.log_from());
 
     // starttls
-    if !direct_tls {
+    let stream = if !direct_tls {
         let mut proceed_sent = false;
 
         let (in_rd, mut in_wr) = stream.split();
+        // todo: more efficient version for TCP:
+        //let (in_rd, mut in_wr) = stream.split();
+
         // we naively read 1 byte at a time, which buffering significantly speeds up
         let in_rd = tokio::io::BufReader::with_capacity(IN_BUFFER_SIZE, in_rd);
         let mut in_rd = StanzaReader(in_rd);
@@ -109,7 +117,10 @@ async fn handle_tls_connection(mut stream: tokio::net::TcpStream, client_addr: &
         if !proceed_sent {
             bail!("stream ended before open");
         }
-    }
+        <S as Split>::combine(in_rd.0.into_inner(), in_wr)?
+    } else {
+        stream
+    };
 
     let stream = acceptor.accept(stream).await?;
     let (_, server_connection) = stream.get_ref();
@@ -138,30 +149,9 @@ async fn handle_tls_connection(mut stream: tokio::net::TcpStream, client_addr: &
 
     #[cfg(feature = "websocket")]
     {
-        let stream: tokio_rustls::TlsStream<tokio::net::TcpStream> = stream.into();
-
         let mut stream = BufStream::with_capacity(IN_BUFFER_SIZE, 0, stream);
-        let websocket = {
-            // wait up to 10 seconds until 3 bytes have been read
-            use std::time::{Duration, Instant};
-            let duration = Duration::from_secs(10);
-            let now = Instant::now();
-            let mut buf = stream.fill_buf().await?;
-            loop {
-                if buf.len() >= 3 {
-                    break; // success
-                }
-                if buf.is_empty() {
-                    bail!("not enough bytes");
-                }
-                if Instant::now() - now > duration {
-                    bail!("less than 3 bytes in 10 seconds, closed connection?");
-                }
-                buf = stream.fill_buf().await?;
-            }
 
-            buf[..3] == b"GET"[..]
-        };
+        let websocket = stream.first_bytes_match(&mut in_filter.buf[0..3], |b| b == b"GET").await?;
 
         if websocket {
             crate::websocket::incoming::handle_websocket_connection(Box::new(stream), config, server_certs, local_addr, client_addr, in_filter).await

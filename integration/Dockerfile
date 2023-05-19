@@ -18,9 +18,9 @@ RUN pacman -S --noconfirm --disable-download-timeout --needed rust cargo git mer
     hg clone 'https://hg.prosody.im/prosody-modules/' /build/prosody-modules && rm -rf /build/prosody-modules/.hg && \
     git clone https://aur.archlinux.org/scansion-hg.git /build/scansion-hg && \
     git clone https://aur.archlinux.org/lua52-cjson.git /build/lua52-cjson && \
-    chown -R git: /build/ && ls -lah /build/ && \
-    cd /build/lua52-cjson && su -m -s /bin/bash git makepkg && pacman -U --noconfirm --needed lua52-cjson-*.pkg.tar* && \
-    cd /build/scansion-hg && su -m -s /bin/bash git makepkg
+    chown -R nobody: /build/ && ls -lah /build/ && \
+    cd /build/lua52-cjson && su -m -s /bin/bash nobody makepkg && pacman -U --noconfirm --needed lua52-cjson-*.pkg.tar* && \
+    cd /build/scansion-hg && su -m -s /bin/bash nobody makepkg
 
 COPY ./Cargo.* /build/
 COPY ./src/ /build/src/
@@ -65,6 +65,8 @@ COPY ./integration/00-no-tls/example.org.zone /var/named/
 COPY ./integration/00-no-tls/prosody1.cfg.lua /etc/prosody/prosody.cfg.lua
 COPY ./contrib/prosody-modules /opt/xmpp-proxy/prosody-modules
 COPY ./integration/*.scs /scansion/
+
+RUN mkdir /run/prosody/
 
 ARG ECDSA=0
 

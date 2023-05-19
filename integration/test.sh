@@ -117,7 +117,7 @@ run_test() {
     sed -i "s/192\.5\.0\./$ipv4.$num./g" *
 
     # start the dns server
-    run_container "$network_name" $num -d -v ./example.org.zone:/var/named/example.org.zone:ro 10 dns named -g -u named -d 99
+    run_container "$network_name" $num -d -v ./example.org.zone:/var/named/example.org.zone:ro 10 dns named -g -d 99
 
     # start the prosody servers if required
     [ -f ./prosody1.cfg.lua ] && run_container "$network_name" $num -d -v ./prosody1.cfg.lua:/etc/prosody/prosody.cfg.lua:ro 20 server1 prosody && podman exec $num-server1 prosodyctl register romeo  one.example.org pass && podman exec $num-server1 prosodyctl register juliet two.example.org pass
