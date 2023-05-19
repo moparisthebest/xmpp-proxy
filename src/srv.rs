@@ -190,7 +190,7 @@ impl XmppConnection {
         stream_open: &[u8],
         in_filter: &mut StanzaFilter,
         client_addr: &mut Context<'_>,
-        config: OutgoingVerifierConfig,
+        config: &OutgoingVerifierConfig,
     ) -> Result<(StanzaWrite, StanzaRead, SocketAddr, &'static str)> {
         debug!("{} attempting connection to SRV: {:?}", client_addr.log_from(), self);
         // todo: for DNSSEC we need to optionally allow target in addition to domain, but what for SNI
@@ -207,28 +207,28 @@ impl XmppConnection {
             debug!("{} trying ip {}", client_addr.log_from(), to_addr);
             match self.conn_type {
                 #[cfg(feature = "tls")]
-                XmppConnectionType::StartTLS => match crate::tls::outgoing::starttls_connect(to_addr, domain, stream_open, in_filter, config.clone()).await {
+                XmppConnectionType::StartTLS => match crate::tls::outgoing::starttls_connect(to_addr, domain, stream_open, in_filter, config).await {
                     Ok((wr, rd)) => return Ok((wr, rd, to_addr, "starttls-out")),
                     Err(e) => error!("starttls connection failed to IP {} from SRV {}, error: {}", to_addr, self.target, e),
                 },
                 #[cfg(feature = "tls")]
-                XmppConnectionType::DirectTLS => match crate::tls::outgoing::tls_connect(to_addr, domain, config.clone()).await {
+                XmppConnectionType::DirectTLS => match crate::tls::outgoing::tls_connect(to_addr, domain, config).await {
                     Ok((wr, rd)) => return Ok((wr, rd, to_addr, "directtls-out")),
                     Err(e) => error!("direct tls connection failed to IP {} from SRV {}, error: {}", to_addr, self.target, e),
                 },
                 #[cfg(feature = "quic")]
-                XmppConnectionType::QUIC => match crate::quic::outgoing::quic_connect(to_addr, domain, config.clone()).await {
+                XmppConnectionType::QUIC => match crate::quic::outgoing::quic_connect(to_addr, domain, config).await {
                     Ok((wr, rd)) => return Ok((wr, rd, to_addr, "quic-out")),
                     Err(e) => error!("quic connection failed to IP {} from SRV {}, error: {}", to_addr, self.target, e),
                 },
                 #[cfg(feature = "websocket")]
                 // todo: when websocket is found via DNS, we need to validate cert against domain, *not* target, this is a security problem with XEP-0156, we are doing it the secure but likely unexpected way here for now
-                XmppConnectionType::WebSocket(ref url, ref origin) => match crate::websocket::outgoing::websocket_connect(to_addr, domain, url, origin, config.clone()).await {
+                XmppConnectionType::WebSocket(ref url, ref origin) => match crate::websocket::outgoing::websocket_connect(to_addr, domain, url, origin, config).await {
                     Ok((wr, rd)) => return Ok((wr, rd, to_addr, "websocket-out")),
                     Err(e) => {
                         if self.secure && self.target != orig_domain {
                             // https is a special case, as target is sent in the Host: header, so we have to literally try twice in case this is set for the other on the server
-                            match crate::websocket::outgoing::websocket_connect(to_addr, orig_domain, url, origin, config.clone()).await {
+                            match crate::websocket::outgoing::websocket_connect(to_addr, orig_domain, url, origin, config).await {
                                 Ok((wr, rd)) => return Ok((wr, rd, to_addr, "websocket-out")),
                                 Err(e2) => error!("websocket connection failed to IP {} from TXT {}, error try 1: {}, error try 2: {}", to_addr, url, e, e2),
                             }
@@ -466,7 +466,7 @@ pub async fn srv_connect(
     let (srvs, cert_verifier) = get_xmpp_connections(domain, is_c2s).await?;
     let config = config.with_custom_certificate_verifier(is_c2s, Arc::new(cert_verifier));
     for srv in srvs {
-        let connect = srv.connect(domain, stream_open, in_filter, client_addr, config.clone()).await;
+        let connect = srv.connect(domain, stream_open, in_filter, client_addr, &config).await;
         if connect.is_err() {
             continue;
         }

@@ -15,7 +15,7 @@ use tokio_tungstenite::tungstenite::{
     },
 };
 
-pub async fn websocket_connect(target: SocketAddr, server_name: &str, url: &Uri, origin: &str, config: OutgoingVerifierConfig) -> Result<(StanzaWrite, StanzaRead)> {
+pub async fn websocket_connect(target: SocketAddr, server_name: &str, url: &Uri, origin: &str, config: &OutgoingVerifierConfig) -> Result<(StanzaWrite, StanzaRead)> {
     let mut request = url.into_client_request()?;
     request.headers_mut().append(SEC_WEBSOCKET_PROTOCOL, "xmpp".parse()?);
     request.headers_mut().append(ORIGIN, origin.parse()?);

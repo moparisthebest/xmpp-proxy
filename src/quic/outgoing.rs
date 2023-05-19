@@ -7,9 +7,9 @@ use crate::{
 use anyhow::Result;
 use log::trace;
 
-pub async fn quic_connect(target: SocketAddr, server_name: &str, config: OutgoingVerifierConfig) -> Result<(StanzaWrite, StanzaRead)> {
+pub async fn quic_connect(target: SocketAddr, server_name: &str, config: &OutgoingVerifierConfig) -> Result<(StanzaWrite, StanzaRead)> {
     let bind_addr = "0.0.0.0:0".parse().unwrap();
-    let client_cfg = config.config_alpn;
+    let client_cfg = config.config_alpn.clone();
 
     let mut endpoint = quinn::Endpoint::client(bind_addr)?;
     endpoint.set_default_client_config(quinn::ClientConfig::new(client_cfg));
