@@ -22,6 +22,8 @@ RUN pacman -S --noconfirm --disable-download-timeout --needed rust cargo git mer
     cd /build/lua52-cjson && su -m -s /bin/bash nobody makepkg && pacman -U --noconfirm --needed lua52-cjson-*.pkg.tar* && \
     cd /build/scansion-hg && su -m -s /bin/bash nobody makepkg
 
+RUN pacman -S --noconfirm --disable-download-timeout --needed unbound gcc luarocks && luarocks --lua-version 5.2 install luaunbound && cp /usr/lib/lua/5.2/lunbound.so /build/
+
 COPY ./Cargo.* /build/
 COPY ./src/ /build/src/
 #COPY ./target/ /build/target/
@@ -35,7 +37,7 @@ FROM base
 
 COPY --from=build /build/*/*.pkg.tar* /tmp/
 
-RUN pacman -S --noconfirm --disable-download-timeout --needed bind nginx prosody lua52-sec ejabberd nss mkcert curl && \
+RUN pacman -S --noconfirm --disable-download-timeout --needed bind nginx prosody lua52-sec ejabberd nss mkcert curl unbound && \
     pacman -U --noconfirm --needed /tmp/*.pkg.tar* && rm -f /tmp/*.pkg.tar* && \
     mkdir -p /opt/xmpp-proxy/prosody-modules/ /opt/prosody-modules/ /scansion && mkcert -install && \
     mkdir -p /etc/certs/ecdsa && cd /etc/certs/ecdsa && \
@@ -60,13 +62,15 @@ COPY --from=build /build/prosody-modules /opt/prosody-modules
 
 COPY --from=build /usr/bin/true /build/target/release/xmpp-prox[y] /usr/bin/
 
+COPY --from=build /build/lunbound.so /usr/lib/lua/5.2/lunbound.so
+
 COPY ./integration/named.conf /etc/
 COPY ./integration/00-no-tls/example.org.zone /var/named/
 COPY ./integration/00-no-tls/prosody1.cfg.lua /etc/prosody/prosody.cfg.lua
 COPY ./contrib/prosody-modules /opt/xmpp-proxy/prosody-modules
 COPY ./integration/*.scs /scansion/
 
-RUN mkdir /run/prosody/
+RUN mkdir -p /run/prosody/
 
 ARG ECDSA=0
 
