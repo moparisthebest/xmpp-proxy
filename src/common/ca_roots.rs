@@ -1,8 +1,21 @@
-#[cfg(feature = "tokio-rustls")]
-use tokio_rustls::webpki::{TlsServerTrustAnchors, TrustAnchor};
+#[cfg(feature = "webpki")]
+use webpki::{TlsServerTrustAnchors, TrustAnchor};
 
 #[cfg(all(feature = "webpki-roots", not(feature = "rustls-native-certs")))]
-pub use webpki_roots::TLS_SERVER_ROOTS;
+lazy_static::lazy_static! {
+    pub static ref TLS_SERVER_ROOTS: TlsServerTrustAnchors<'static> = {
+        let root_cert_store: &mut Box<Vec<_>> = Box::leak(Box::default());
+        for ta in webpki_roots::TLS_SERVER_ROOTS {
+            let ta = TrustAnchor {
+                subject: ta.subject,
+                spki: ta.spki,
+                name_constraints: ta.name_constraints,
+            };
+            root_cert_store.push(ta);
+        }
+        TlsServerTrustAnchors(root_cert_store)
+    };
+}
 
 #[cfg(all(feature = "rustls-native-certs", not(feature = "webpki-roots")))]
 lazy_static::lazy_static! {
@@ -23,7 +36,7 @@ lazy_static::lazy_static! {
 pub fn root_cert_store() -> rustls::RootCertStore {
     use rustls::{OwnedTrustAnchor, RootCertStore};
     let mut root_cert_store = RootCertStore::empty();
-    root_cert_store.add_server_trust_anchors(
+    root_cert_store.add_trust_anchors(
         TLS_SERVER_ROOTS
             .0
             .iter()

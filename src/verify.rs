@@ -7,10 +7,10 @@ use ring::digest::SHA256;
 use rustls::{
     client::{ServerCertVerified, ServerCertVerifier},
     server::{ClientCertVerified, ClientCertVerifier},
-    Certificate, DistinguishedNames, Error, ServerName,
+    Certificate, CertificateError, DistinguishedName, Error, ServerName,
 };
 use std::{convert::TryFrom, time::SystemTime};
-use tokio_rustls::{webpki, webpki::DnsName};
+use webpki::DnsName;
 
 type SignatureAlgorithms = &'static [&'static webpki::SignatureAlgorithm];
 
@@ -34,10 +34,9 @@ static SUPPORTED_SIG_ALGS: SignatureAlgorithms = &[
 pub fn pki_error(error: webpki::Error) -> Error {
     use webpki::Error::*;
     match error {
-        BadDer | BadDerTime => Error::InvalidCertificateEncoding,
-        InvalidSignatureForPublicKey => Error::InvalidCertificateSignature,
-        UnsupportedSignatureAlgorithm | UnsupportedSignatureAlgorithmForPublicKey => Error::InvalidCertificateSignatureType,
-        e => Error::InvalidCertificateData(format!("invalid peer certificate: {}", e)),
+        BadDer | BadDerTime => Error::InvalidCertificate(CertificateError::BadEncoding),
+        InvalidSignatureForPublicKey | UnsupportedSignatureAlgorithm | UnsupportedSignatureAlgorithmForPublicKey => Error::InvalidCertificate(CertificateError::BadSignature),
+        e => Error::General(format!("invalid peer certificate: {}", e)),
     }
 }
 
@@ -58,12 +57,12 @@ impl ClientCertVerifier for AllowAnonymousOrAnyCert {
         true
     }
 
-    fn client_auth_mandatory(&self) -> Option<bool> {
-        Some(false)
+    fn client_auth_mandatory(&self) -> bool {
+        false
     }
 
-    fn client_auth_root_subjects(&self) -> Option<DistinguishedNames> {
-        Some(Vec::new())
+    fn client_auth_root_subjects(&self) -> &[DistinguishedName] {
+        &[]
     }
 
     fn verify_client_cert(&self, _: &Certificate, _: &[Certificate], _: SystemTime) -> Result<ClientCertVerified, Error> {
@@ -125,12 +124,12 @@ impl XmppServerCertVerifier {
         let cert = verify_is_valid_tls_server_cert(end_entity, intermediates, now)?;
 
         for name in &self.names {
-            if cert.verify_is_valid_for_dns_name(name.as_ref()).is_ok() {
+            if cert.verify_is_valid_for_subject_name(webpki::SubjectNameRef::DnsName(name.as_ref())).is_ok() {
                 return Ok(ServerCertVerified::assertion());
             }
         }
 
-        Err(Error::InvalidCertificateData(format!("invalid peer certificate: all validation attempts failed: {:?}", end_entity)))
+        Err(Error::General(format!("invalid peer certificate: all validation attempts failed: {:?}", end_entity)))
     }
 }
 

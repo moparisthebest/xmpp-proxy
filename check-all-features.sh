@@ -66,6 +66,12 @@ echo_cargo() {
   #cargo run "$@" -- -v
   echo cargo check "$@"
   cargo check "$@"
+  ret=$?
+  if [ $ret -ne 0 ]
+  then
+    echo "features failed: $@"
+  fi
+  return $ret
 }
 
 #all_features | sort -u | wc -l; exit 0
@@ -77,3 +83,5 @@ echo_cargo
 all_features | sort | xargs -n1 --max-procs=$threads bash -c 'echo_cargo --no-default-features --features "$@" || exit 255' _
 
 echo good!
+
+

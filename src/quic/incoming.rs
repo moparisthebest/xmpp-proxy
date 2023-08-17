@@ -12,7 +12,7 @@ use tokio::task::JoinHandle;
 
 pub fn spawn_quic_listener(udp_socket: UdpSocket, config: CloneableConfig, server_config: ServerConfig) -> JoinHandle<Result<()>> {
     let local_addr = udp_socket.local_addr().die("cannot get local_addr for quic socket");
-    let incoming = Endpoint::new(EndpointConfig::default(), Some(server_config), udp_socket, TokioRuntime).die("cannot listen on port/interface");
+    let incoming = Endpoint::new(EndpointConfig::default(), Some(server_config), udp_socket, Arc::new(TokioRuntime)).die("cannot listen on port/interface");
     tokio::spawn(async move {
         // when could this return None, do we quit?
         while let Some(incoming_conn) = incoming.accept().await {

@@ -22,7 +22,6 @@ use std::{
     net::{IpAddr, SocketAddr},
     sync::Arc,
 };
-use tokio_rustls::webpki::{DnsName, DnsNameRef};
 #[cfg(feature = "websocket")]
 use tokio_tungstenite::tungstenite::http::Uri;
 use trust_dns_resolver::{
@@ -30,6 +29,7 @@ use trust_dns_resolver::{
     lookup::{SrvLookup, TxtLookup},
     IntoName, TokioAsyncResolver,
 };
+use webpki::{DnsName, DnsNameRef};
 
 lazy_static::lazy_static! {
     static ref RESOLVER: TokioAsyncResolver = make_resolver();

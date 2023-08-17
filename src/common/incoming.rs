@@ -62,7 +62,7 @@ impl ServerCerts {
 
     pub fn sni(&self) -> Option<String> {
         match self {
-            ServerCerts::Tls(c) => c.sni_hostname().map(|s| s.to_string()),
+            ServerCerts::Tls(c) => c.server_name().map(|s| s.to_string()),
             #[cfg(feature = "quic")]
             ServerCerts::Quic(c) => c.handshake_data().and_then(|v| v.downcast::<quinn::crypto::rustls::HandshakeData>().ok()).and_then(|h| h.server_name),
         }
