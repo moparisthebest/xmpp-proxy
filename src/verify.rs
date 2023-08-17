@@ -10,7 +10,7 @@ use rustls::{
     Certificate, CertificateError, DistinguishedName, Error, ServerName,
 };
 use std::{convert::TryFrom, time::SystemTime};
-use webpki::DnsName;
+use webpki::{DnsName, KeyUsage};
 
 type SignatureAlgorithms = &'static [&'static webpki::SignatureAlgorithm];
 
@@ -45,7 +45,8 @@ pub fn verify_is_valid_tls_server_cert<'a>(end_entity: &'a Certificate, intermed
     let (cert, chain) = prepare(end_entity, intermediates)?;
     let webpki_now = webpki::Time::try_from(now).map_err(|_| Error::FailedToGetCurrentTime)?;
 
-    cert.verify_is_valid_tls_server_cert(SUPPORTED_SIG_ALGS, &TLS_SERVER_ROOTS, &chain, webpki_now).map_err(pki_error)?;
+    cert.verify_for_usage(SUPPORTED_SIG_ALGS, &TLS_SERVER_ROOTS, &chain, webpki_now, KeyUsage::server_auth(), &[])
+        .map_err(pki_error)?;
 
     Ok(cert)
 }

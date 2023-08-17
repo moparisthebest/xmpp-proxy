@@ -45,7 +45,7 @@ env_logger = { version = "0.10", optional = true, features = [] }
 
 # incoming deps
 tokio-rustls = { version = "0.24", optional = true }
-webpki = { package = "rustls-webpki", version = "0.100", optional = true }
+webpki = { package = "rustls-webpki", version = "0.101", optional = true }
 
 # outgoing deps
 lazy_static = "1.4"
