@@ -1,7 +1,7 @@
 #![deny(clippy::all)]
 use anyhow::Result;
 use die::{die, Die};
-use log::{debug, error, info};
+use log::{debug, info};
 use serde_derive::Deserialize;
 use std::{
     ffi::OsString,
@@ -97,7 +97,7 @@ fn spawn_refresh_task(certs_key: &'static CertsKey, cfg_path: OsString) -> Optio
                             info!("reloaded cert/key successfully!");
                         }
                     }
-                    Err(e) => error!("invalid config/cert/key on SIGHUP: {}", e),
+                    Err(e) => log::error!("invalid config/cert/key on SIGHUP: {}", e),
                 };
             }
         }))
@@ -148,7 +148,7 @@ async fn main() {
         outgoing_listen.push(TcpListener::bind(a).await.die("cannot listen on port/interface"));
     }
 
-    #[cfg(feature = "nix")]
+    #[cfg(all(feature = "nix", not(target_os = "windows")))]
     if let Ok(fds) = xmpp_proxy::systemd::receive_descriptors_with_names(true) {
         use xmpp_proxy::systemd::Listener;
         for fd in fds {

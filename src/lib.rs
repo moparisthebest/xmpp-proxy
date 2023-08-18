@@ -20,7 +20,7 @@ pub mod websocket;
 #[cfg(any(feature = "s2s-incoming", feature = "outgoing"))]
 pub mod verify;
 
-#[cfg(feature = "nix")]
+#[cfg(all(feature = "nix", not(target_os = "windows")))]
 pub mod systemd;
 
 pub mod context;
