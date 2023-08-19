@@ -13,7 +13,7 @@ pub struct Context<'a> {
     proto: &'a str,
     is_c2s: Option<bool>,
     to: Option<String>,
-    to_addr: Option<SocketAddr>,
+    to_addr: Option<String>,
     from: Option<String>,
     client_addr: SocketAddr,
 }
@@ -59,7 +59,7 @@ impl<'a> Context<'a> {
             if self.from.is_some() { self.from.as_ref().unwrap() } else { "unk" },
             self.proto,
             if self.is_c2s.is_some() { c2s(self.is_c2s.unwrap()) } else { "unk" },
-            if self.to_addr.is_some() { self.to_addr.as_ref().unwrap().to_string() } else { "unk".to_string() },
+            if self.to_addr.is_some() { self.to_addr.as_ref().unwrap() } else { "unk" },
             if self.to.is_some() { self.to.as_ref().unwrap() } else { "unk" },
         );
         self.log_to = self.log_from.replace(" -> ", " <- ");
@@ -103,7 +103,7 @@ impl<'a> Context<'a> {
         }
     }
 
-    pub fn set_to_addr(&mut self, to_addr: SocketAddr) {
+    pub fn set_to_addr(&mut self, to_addr: String) {
         if log_enabled!(log::Level::Info) {
             self.to_addr = Some(to_addr);
             self.re_calc();

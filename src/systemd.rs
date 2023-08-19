@@ -24,7 +24,7 @@ pub struct FileDescriptor {
     pub name: Option<String>,
 }
 
-pub enum Listener {
+pub enum SystemdListener {
     Tcp(Box<dyn FnOnce() -> TcpListener>),
     Udp(Box<dyn FnOnce() -> UdpSocket>),
     UnixListener(Box<dyn FnOnce() -> UnixListener>),
@@ -36,13 +36,13 @@ impl FileDescriptor {
         self.name
     }
 
-    pub fn listener(&self) -> Listener {
+    pub fn listener(&self) -> SystemdListener {
         let raw_fd = self.raw_fd;
         match (self.tcp_not_udp, self.inet_not_unix) {
-            (true, true) => Listener::Tcp(Box::new(move || unsafe { TcpListener::from_raw_fd(raw_fd) })),
-            (false, true) => Listener::Udp(Box::new(move || unsafe { UdpSocket::from_raw_fd(raw_fd) })),
-            (true, false) => Listener::UnixListener(Box::new(move || unsafe { UnixListener::from_raw_fd(raw_fd) })),
-            (false, false) => Listener::UnixDatagram(Box::new(move || unsafe { UnixDatagram::from_raw_fd(raw_fd) })),
+            (true, true) => SystemdListener::Tcp(Box::new(move || unsafe { TcpListener::from_raw_fd(raw_fd) })),
+            (false, true) => SystemdListener::Udp(Box::new(move || unsafe { UdpSocket::from_raw_fd(raw_fd) })),
+            (true, false) => SystemdListener::UnixListener(Box::new(move || unsafe { UnixListener::from_raw_fd(raw_fd) })),
+            (false, false) => SystemdListener::UnixDatagram(Box::new(move || unsafe { UnixDatagram::from_raw_fd(raw_fd) })),
         }
     }
 }

@@ -16,8 +16,8 @@ pub mod incoming;
 #[cfg(feature = "outgoing")]
 pub mod outgoing;
 
-pub type WsWr = SplitSink<WebSocketStream<Box<dyn AsyncReadAndWrite + Unpin + Send>>, tokio_tungstenite::tungstenite::Message>;
-pub type WsRd = SplitStream<WebSocketStream<Box<dyn AsyncReadAndWrite + Unpin + Send>>>;
+pub type WsWr = SplitSink<WebSocketStream<BoxAsyncReadWrite>, tokio_tungstenite::tungstenite::Message>;
+pub type WsRd = SplitStream<WebSocketStream<BoxAsyncReadWrite>>;
 
 // https://datatracker.ietf.org/doc/html/rfc7395
 
@@ -30,11 +30,7 @@ fn ws_cfg(max_stanza_size_bytes: usize) -> Option<WebSocketConfig> {
     })
 }
 
-pub trait AsyncReadAndWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite {}
-
-impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite> AsyncReadAndWrite for T {}
-
-pub async fn incoming_websocket_connection(stream: Box<dyn AsyncReadAndWrite + Unpin + Send>, max_stanza_size_bytes: usize) -> Result<(StanzaRead, StanzaWrite)> {
+pub async fn incoming_websocket_connection(stream: BoxAsyncReadWrite, max_stanza_size_bytes: usize) -> Result<(StanzaRead, StanzaWrite)> {
     // accept the websocket
     let stream = tokio_tungstenite::accept_hdr_async_with_config(
         stream,
@@ -118,6 +114,7 @@ pub fn to_ws_new(buf: &[u8], mut end_of_first_tag: usize, is_c2s: bool) -> Resul
 }
 
 use crate::{
+    common::BoxAsyncReadWrite,
     in_out::{StanzaRead, StanzaWrite},
     slicesubsequence::SliceSubsequence,
 };

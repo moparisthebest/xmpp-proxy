@@ -6,5 +6,5 @@
 **/out/
 **/core.*
 fuzz/target/
-todo.txt
+*.txt
 conflict/

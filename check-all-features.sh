@@ -1,12 +1,20 @@
 #!/bin/bash
 threads="$1"
+shift
+clean_after_num_builds="$1"
 
 set -euo pipefail
 
 # if we have access to nproc, divide that by 2, otherwise use 1 thread by default
 [ "$threads" == "" ] && threads=$(($(nproc || echo 2) / 2))
 
+# 50 is about 1.5gb, ymmv
+[ "$clean_after_num_builds" == "" ] && clean_after_num_builds=50
+
+export clean_after_num_builds
+
 echo "threads: $threads"
+echo "clean_after_num_builds: $clean_after_num_builds"
 
 export RUSTFLAGS=-Awarnings
 
@@ -65,18 +73,34 @@ echo_cargo() {
   #echo cargo run "$@" -- -v
   #cargo run "$@" -- -v
   echo cargo check "$@"
-  cargo check "$@"
+  flock -s /tmp/xmpp-proxy-check-all-features.lock cargo check "$@"
   ret=$?
   if [ $ret -ne 0 ]
   then
-    echo "features failed: $@"
+    echo "command failed: cargo check $@"
   fi
+  (
+    flock -x 200
+    # now we are under an exclusive lock
+    count=$(cat /tmp/xmpp-proxy-check-all-features.count)
+    count=$(( count + 1 ))
+    if [ $count -ge $clean_after_num_builds ]
+    then
+      echo cargo clean
+      cargo clean
+      count=0
+    fi
+    echo $count > /tmp/xmpp-proxy-check-all-features.count
+
+  ) 200>/tmp/xmpp-proxy-check-all-features.lock
   return $ret
 }
 
 #all_features | sort -u | wc -l; exit 0
 
 export -f echo_cargo
+
+echo 0 > /tmp/xmpp-proxy-check-all-features.count
 
 echo_cargo
 

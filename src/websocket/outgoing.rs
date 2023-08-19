@@ -1,7 +1,7 @@
 use crate::{
-    common::outgoing::OutgoingVerifierConfig,
+    common::{outgoing::OutgoingVerifierConfig, BoxAsyncReadWrite},
     in_out::{StanzaRead, StanzaWrite},
-    websocket::{ws_cfg, AsyncReadAndWrite},
+    websocket::ws_cfg,
 };
 use anyhow::Result;
 use futures_util::StreamExt;
@@ -27,7 +27,7 @@ pub async fn websocket_connect(target: SocketAddr, server_name: &str, url: &Uri,
     //let stream: tokio_rustls::TlsStream<tokio::net::TcpStream> = stream.into();
     // todo: tokio_tungstenite seems to have a bug, if the write buffer is non-zero, it'll hang forever, even though we always flush, investigate
     //let stream = BufStream::with_capacity(crate::IN_BUFFER_SIZE, 0, stream);
-    let stream: Box<dyn AsyncReadAndWrite + Unpin + Send> = Box::new(stream);
+    let stream: BoxAsyncReadWrite = Box::new(stream);
 
     let (stream, _) = tokio_tungstenite::client_async_with_config(request, stream, ws_cfg(config.max_stanza_size_bytes)).await?;
 

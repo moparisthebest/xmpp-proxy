@@ -12,10 +12,20 @@ use rustls::{
     sign::{RsaSigningKey, SigningKey},
     Certificate, PrivateKey,
 };
-use std::{fs::File, io, sync::Arc};
+use serde::{Deserialize, Deserializer};
+use std::{
+    fmt::{Display, Formatter},
+    fs::File,
+    io,
+    net::{SocketAddr, UdpSocket},
+    path::PathBuf,
+    sync::Arc,
+};
+#[cfg(not(target_os = "windows"))]
+use tokio::net::UnixStream;
 use tokio::{
-    io::{AsyncRead, AsyncWrite, BufReader, BufStream},
-    net::TcpStream,
+    io::{AsyncBufRead, AsyncRead, AsyncWrite, BufReader, BufStream},
+    net::{TcpListener, TcpStream},
 };
 
 #[cfg(feature = "incoming")]
@@ -29,10 +39,25 @@ pub mod ca_roots;
 
 #[cfg(feature = "rustls")]
 pub mod certs_key;
+pub mod stream_listener;
 
 pub const IN_BUFFER_SIZE: usize = 8192;
 pub const ALPN_XMPP_CLIENT: &[u8] = b"xmpp-client";
 pub const ALPN_XMPP_SERVER: &[u8] = b"xmpp-server";
+
+pub trait AsyncReadAndWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> AsyncReadAndWrite for T {}
+
+pub trait AsyncReadWritePeekSplit: tokio::io::AsyncRead + tokio::io::AsyncWrite + Peek + Send + 'static + Unpin + Split {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Peek + Send + 'static + Unpin + Split> AsyncReadWritePeekSplit for T {}
+
+pub type BoxAsyncReadWrite = Box<dyn AsyncReadAndWrite>;
+pub type BufAsyncReadWrite = BufStream<BoxAsyncReadWrite>;
+
+pub fn buf_stream(stream: BoxAsyncReadWrite) -> BufAsyncReadWrite {
+    // todo: do we *want* a non-zero writer_capacity ?
+    BufStream::with_capacity(IN_BUFFER_SIZE, 0, stream)
+}
 
 pub fn to_str(buf: &[u8]) -> std::borrow::Cow<'_, str> {
     String::from_utf8_lossy(buf)
@@ -46,13 +71,97 @@ pub fn c2s(is_c2s: bool) -> &'static str {
     }
 }
 
+#[derive(Clone)]
+pub enum SocketAddrPath {
+    SocketAddr(SocketAddr),
+    #[cfg(not(target_os = "windows"))]
+    Path(PathBuf),
+}
+
+impl SocketAddrPath {
+    pub async fn connect(&self) -> Result<(Box<dyn AsyncRead + Unpin + Send>, Box<dyn AsyncWrite + Unpin + Send>)> {
+        Ok(match self {
+            SocketAddrPath::SocketAddr(sa) => TcpStream::connect(sa).await?.split_boxed(),
+            #[cfg(not(target_os = "windows"))]
+            SocketAddrPath::Path(path) => tokio::net::UnixStream::connect(path).await?.split_boxed(),
+        })
+    }
+
+    pub async fn bind(&self) -> Result<Listener> {
+        Ok(match self {
+            SocketAddrPath::SocketAddr(sa) => Listener::Tcp(TcpListener::bind(sa).await?),
+            #[cfg(not(target_os = "windows"))]
+            SocketAddrPath::Path(path) => Listener::Unix(tokio::net::UnixListener::bind(path)?),
+        })
+    }
+
+    pub async fn bind_udp(&self) -> Result<UdpListener> {
+        Ok(match self {
+            SocketAddrPath::SocketAddr(sa) => UdpListener::Udp(UdpSocket::bind(sa)?),
+            #[cfg(not(target_os = "windows"))]
+            SocketAddrPath::Path(path) => UdpListener::Unix(std::os::unix::net::UnixDatagram::bind(path)?),
+        })
+    }
+}
+
+impl Display for SocketAddrPath {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SocketAddrPath::SocketAddr(x) => x.fmt(f),
+            #[cfg(not(target_os = "windows"))]
+            SocketAddrPath::Path(x) => x.display().fmt(f),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for SocketAddrPath {
+    fn deserialize<D>(deserializer: D) -> Result<SocketAddrPath, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[cfg(not(target_os = "windows"))]
+        {
+            let str = String::deserialize(deserializer)?;
+            // seems good enough, possibly could improve
+            Ok(if str.contains('/') {
+                SocketAddrPath::Path(PathBuf::from(str))
+            } else {
+                SocketAddrPath::SocketAddr(str.parse().map_err(serde::de::Error::custom)?)
+            })
+        }
+        #[cfg(target_os = "windows")]
+        {
+            Ok(SocketAddrPath::SocketAddr(SocketAddr::deserialize(deserializer)?))
+        }
+    }
+}
+
+pub enum Listener {
+    Tcp(TcpListener),
+    #[cfg(not(target_os = "windows"))]
+    Unix(tokio::net::UnixListener),
+}
+
+pub enum UdpListener {
+    Udp(UdpSocket),
+    #[cfg(not(target_os = "windows"))]
+    Unix(std::os::unix::net::UnixDatagram),
+}
+
 pub trait Split: Sized {
-    type ReadHalf: AsyncRead + Unpin;
-    type WriteHalf: AsyncWrite + Unpin;
+    type ReadHalf: AsyncRead + Unpin + Send + 'static;
+    type WriteHalf: AsyncWrite + Unpin + Send + 'static;
 
     fn combine(read_half: Self::ReadHalf, write_half: Self::WriteHalf) -> Result<Self>;
 
     fn split(self) -> (Self::ReadHalf, Self::WriteHalf);
+
+    fn stanza_rw(self) -> (StanzaRead, StanzaWrite);
+
+    fn split_boxed(self) -> (Box<dyn AsyncRead + Unpin + Send>, Box<dyn AsyncWrite + Unpin + Send>) {
+        let (rd, wr) = self.split();
+        (Box::new(rd), Box::new(wr))
+    }
 }
 
 impl Split for TcpStream {
@@ -66,9 +175,56 @@ impl Split for TcpStream {
     fn split(self) -> (Self::ReadHalf, Self::WriteHalf) {
         self.into_split()
     }
+
+    fn stanza_rw(self) -> (StanzaRead, StanzaWrite) {
+        let (in_rd, in_wr) = self.into_split();
+        (StanzaRead::new(in_rd), StanzaWrite::new(in_wr))
+    }
 }
 
-impl<T: AsyncRead + AsyncWrite + Unpin + Send> Split for BufStream<T> {
+#[cfg(feature = "tokio-rustls")]
+impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Split for tokio_rustls::server::TlsStream<T> {
+    type ReadHalf = tokio::io::ReadHalf<tokio_rustls::server::TlsStream<T>>;
+    type WriteHalf = tokio::io::WriteHalf<tokio_rustls::server::TlsStream<T>>;
+
+    fn combine(read_half: Self::ReadHalf, write_half: Self::WriteHalf) -> Result<Self> {
+        if read_half.is_pair_of(&write_half) {
+            Ok(read_half.unsplit(write_half))
+        } else {
+            bail!("non-matching read/write half")
+        }
+    }
+
+    fn split(self) -> (Self::ReadHalf, Self::WriteHalf) {
+        tokio::io::split(self)
+    }
+
+    fn stanza_rw(self) -> (StanzaRead, StanzaWrite) {
+        let (in_rd, in_wr) = tokio::io::split(self);
+        (StanzaRead::new(in_rd), StanzaWrite::new(in_wr))
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+impl Split for UnixStream {
+    type ReadHalf = tokio::net::unix::OwnedReadHalf;
+    type WriteHalf = tokio::net::unix::OwnedWriteHalf;
+
+    fn combine(read_half: Self::ReadHalf, write_half: Self::WriteHalf) -> Result<Self> {
+        Ok(read_half.reunite(write_half)?)
+    }
+
+    fn split(self) -> (Self::ReadHalf, Self::WriteHalf) {
+        self.into_split()
+    }
+
+    fn stanza_rw(self) -> (StanzaRead, StanzaWrite) {
+        let (in_rd, in_wr) = self.into_split();
+        (StanzaRead::new(in_rd), StanzaWrite::new(in_wr))
+    }
+}
+
+impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Split for BufStream<T> {
     type ReadHalf = tokio::io::ReadHalf<BufStream<T>>;
     type WriteHalf = tokio::io::WriteHalf<BufStream<T>>;
 
@@ -83,13 +239,18 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> Split for BufStream<T> {
     fn split(self) -> (Self::ReadHalf, Self::WriteHalf) {
         tokio::io::split(self)
     }
+
+    fn stanza_rw(self) -> (StanzaRead, StanzaWrite) {
+        let (in_rd, in_wr) = tokio::io::split(self);
+        (StanzaRead::already_buffered(in_rd), StanzaWrite::new(in_wr))
+    }
 }
 
 #[async_trait]
 pub trait Peek {
     async fn peek_bytes<'a>(&mut self, p: &'a mut [u8]) -> anyhow::Result<&'a [u8]>;
 
-    async fn first_bytes_match<'a>(&mut self, p: &'a mut [u8], matcher: fn(&'a [u8]) -> bool) -> anyhow::Result<bool> {
+    async fn first_bytes_match<'a>(&mut self, p: &'a mut [u8], matcher: fn(&'a [u8]) -> bool) -> Result<bool> {
         Ok(matcher(self.peek_bytes(p).await?))
     }
 }
@@ -168,6 +329,23 @@ impl<T: AsyncRead + Unpin + Send> Peek for BufReader<T> {
             }
         }
     }
+}
+
+/// Caution: this will loop forever, call timeout variant `first_bytes_match_buf_timeout`
+async fn first_bytes_match_buf(stream: &mut (dyn AsyncBufRead + Send + Unpin), len: usize, matcher: fn(&[u8]) -> bool) -> Result<bool> {
+    use tokio::io::AsyncBufReadExt;
+    loop {
+        let buf = stream.fill_buf().await?;
+        if buf.len() >= len {
+            return Ok(matcher(&buf[0..len]));
+        }
+    }
+}
+
+pub async fn first_bytes_match_buf_timeout(stream: &mut (dyn AsyncBufRead + Send + Unpin), len: usize, matcher: fn(&[u8]) -> bool) -> Result<bool> {
+    // wait up to 10 seconds until 3 bytes have been read
+    use std::time::Duration;
+    tokio::time::timeout(Duration::from_secs(10), first_bytes_match_buf(stream, len, matcher)).await?
 }
 
 pub async fn stream_preamble(in_rd: &mut StanzaRead, in_wr: &mut StanzaWrite, client_addr: &'_ str, in_filter: &mut StanzaFilter) -> Result<(Vec<u8>, bool)> {

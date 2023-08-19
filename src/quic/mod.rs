@@ -1,4 +1,7 @@
-use crate::common::Split;
+use crate::{
+    common::Split,
+    in_out::{StanzaRead, StanzaWrite},
+};
 use anyhow::bail;
 use quinn::{RecvStream, SendStream};
 use std::{
@@ -13,6 +16,9 @@ pub mod incoming;
 
 #[cfg(feature = "outgoing")]
 pub mod outgoing;
+
+#[cfg(all(feature = "incoming", not(target_os = "windows")))]
+pub mod unix_datagram;
 
 pub struct QuicStream {
     pub send: SendStream,
@@ -53,5 +59,9 @@ impl Split for QuicStream {
 
     fn split(self) -> (Self::ReadHalf, Self::WriteHalf) {
         (self.recv, self.send)
+    }
+
+    fn stanza_rw(self) -> (StanzaRead, StanzaWrite) {
+        (StanzaRead::new(self.recv), StanzaWrite::new(self.send))
     }
 }

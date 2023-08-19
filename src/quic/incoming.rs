@@ -1,18 +1,34 @@
 use crate::{
-    common::incoming::{shuffle_rd_wr, CloneableConfig, ServerCerts},
+    common::incoming::{shuffle_rd_wr, IncomingConfig, ServerCerts},
     context::Context,
     in_out::{StanzaRead, StanzaWrite},
 };
 use anyhow::Result;
 use die::Die;
 use log::{error, info};
-use quinn::{Endpoint, EndpointConfig, ServerConfig, TokioRuntime};
-use std::{net::UdpSocket, sync::Arc};
+use quinn::{AsyncUdpSocket, Endpoint, EndpointConfig, ServerConfig, TokioRuntime};
+use std::{
+    net::{SocketAddr, UdpSocket},
+    sync::Arc,
+};
 use tokio::task::JoinHandle;
 
-pub fn spawn_quic_listener(udp_socket: UdpSocket, config: CloneableConfig, server_config: ServerConfig) -> JoinHandle<Result<()>> {
+#[cfg(not(target_os = "windows"))]
+pub fn spawn_quic_listener_unix(udp_socket: std::os::unix::net::UnixDatagram, config: Arc<IncomingConfig>, server_config: ServerConfig) -> JoinHandle<Result<()>> {
+    let udp_socket = crate::quic::unix_datagram::wrap_unix_udp_socket(udp_socket).die("cannot wrap unix udp socket");
+    // todo: fake local_addr
+    let local_addr = udp_socket.local_addr().die("cannot get local_addr for quic socket");
+    let incoming = Endpoint::new_with_abstract_socket(EndpointConfig::default(), Some(server_config), udp_socket, Arc::new(TokioRuntime)).die("cannot listen on port/interface");
+    internal_spawn_quic_listener(incoming, local_addr, config)
+}
+
+pub fn spawn_quic_listener(udp_socket: UdpSocket, config: Arc<IncomingConfig>, server_config: ServerConfig) -> JoinHandle<Result<()>> {
     let local_addr = udp_socket.local_addr().die("cannot get local_addr for quic socket");
     let incoming = Endpoint::new(EndpointConfig::default(), Some(server_config), udp_socket, Arc::new(TokioRuntime)).die("cannot listen on port/interface");
+    internal_spawn_quic_listener(incoming, local_addr, config)
+}
+
+fn internal_spawn_quic_listener(incoming: Endpoint, local_addr: SocketAddr, config: Arc<IncomingConfig>) -> JoinHandle<Result<()>> {
     tokio::spawn(async move {
         // when could this return None, do we quit?
         while let Some(incoming_conn) = incoming.accept().await {

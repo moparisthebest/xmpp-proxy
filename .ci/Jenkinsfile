@@ -28,9 +28,14 @@ node('linux && docker') {
 
     stage('Build + Deploy') {
         sh '''
+        ./check-all-features.sh || exit 1
+        cargo clean
         mkdir -p release
         cp xmpp-proxy.toml release
         curl --compressed -sL https://code.moparisthebest.com/moparisthebest/self-ci/raw/branch/master/build-ci.sh | bash
+        ret=$?
+        docker system prune -af
+        exit $ret
         '''
     }
 

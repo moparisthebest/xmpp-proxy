@@ -32,7 +32,7 @@ serde = { version = "1.0", features = ["derive"] }
 futures = "0.3"
 die = "0.2"
 anyhow = "1.0"
-tokio = { version = "1.9", features = ["net", "rt", "rt-multi-thread", "macros", "io-util", "signal"] }
+tokio = { version = "1.9", features = ["net", "rt", "rt-multi-thread", "macros", "io-util", "signal", "time"] }
 ring = "0.16"
 data-encoding = "2.3"
 async-trait = "0.1"
@@ -100,6 +100,9 @@ websocket = ["tokio-tungstenite", "futures-util", "tls"] # websocket+incoming al
 
 logging = ["rand", "env_logger"]
 systemd = ["nix"]
+
+# enables unit tests that need network and therefore may be flaky
+net-test = []
 
 [dev-dependencies]
 serde_json = "1.0"

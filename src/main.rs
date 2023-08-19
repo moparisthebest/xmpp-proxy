@@ -3,33 +3,40 @@ use anyhow::Result;
 use die::{die, Die};
 use log::{debug, info};
 use serde_derive::Deserialize;
-use std::{
-    ffi::OsString,
-    fs::File,
-    io::Read,
-    iter::Iterator,
-    net::{SocketAddr, UdpSocket},
-    path::Path,
-    sync::Arc,
-};
+use std::{ffi::OsString, fs::File, io::Read, iter::Iterator, path::Path, sync::Arc};
 use tokio::{net::TcpListener, task::JoinHandle};
-use xmpp_proxy::common::certs_key::CertsKey;
+use xmpp_proxy::common::{certs_key::CertsKey, Listener, SocketAddrPath, UdpListener};
+
+#[cfg(not(target_os = "windows"))]
+use tokio::net::UnixListener;
+
 #[cfg(feature = "outgoing")]
 use xmpp_proxy::{common::outgoing::OutgoingConfig, outgoing::spawn_outgoing_listener};
 
 #[derive(Deserialize, Default)]
 struct Config {
+    #[serde(default)]
     tls_key: String,
+    #[serde(default)]
     tls_cert: String,
-    incoming_listen: Vec<String>,
-    quic_listen: Vec<String>,
-    outgoing_listen: Vec<String>,
+    #[serde(default)]
+    incoming_listen: Vec<SocketAddrPath>,
+    #[serde(default)]
+    quic_listen: Vec<SocketAddrPath>,
+    #[serde(default)]
+    outgoing_listen: Vec<SocketAddrPath>,
+    #[serde(default = "default_max_stanza_size_bytes")]
     max_stanza_size_bytes: usize,
-    s2s_target: Option<SocketAddr>,
-    c2s_target: Option<SocketAddr>,
+    s2s_target: Option<SocketAddrPath>,
+    c2s_target: Option<SocketAddrPath>,
+    #[serde(default)]
     proxy: bool,
     log_level: Option<String>,
     log_style: Option<String>,
+}
+
+fn default_max_stanza_size_bytes() -> usize {
+    262_144
 }
 
 impl Config {
@@ -41,13 +48,13 @@ impl Config {
     }
 
     #[cfg(feature = "incoming")]
-    fn get_cloneable_cfg(&self) -> xmpp_proxy::common::incoming::CloneableConfig {
-        xmpp_proxy::common::incoming::CloneableConfig {
+    fn get_incoming_cfg(&self) -> xmpp_proxy::common::incoming::IncomingConfig {
+        xmpp_proxy::common::incoming::IncomingConfig {
             max_stanza_size_bytes: self.max_stanza_size_bytes,
             #[cfg(feature = "s2s-incoming")]
-            s2s_target: self.s2s_target,
+            s2s_target: self.s2s_target.clone(),
             #[cfg(feature = "c2s-incoming")]
-            c2s_target: self.c2s_target,
+            c2s_target: self.c2s_target.clone(),
             proxy: self.proxy,
         }
     }
@@ -137,31 +144,31 @@ async fn main() {
 
     let mut incoming_listen = Vec::new();
     for a in main_config.incoming_listen.iter() {
-        incoming_listen.push(TcpListener::bind(a).await.die("cannot listen on port/interface"));
+        incoming_listen.push(a.bind().await.die("cannot listen on port/interface/socket"));
     }
     let mut quic_listen = Vec::new();
     for a in main_config.quic_listen.iter() {
-        quic_listen.push(UdpSocket::bind(a).die("cannot listen on port/interface"));
+        quic_listen.push(a.bind_udp().await.die("cannot listen on port/interface/socket"));
     }
     let mut outgoing_listen = Vec::new();
     for a in main_config.outgoing_listen.iter() {
-        outgoing_listen.push(TcpListener::bind(a).await.die("cannot listen on port/interface"));
+        outgoing_listen.push(a.bind().await.die("cannot listen on port/interface/socket"));
     }
 
     #[cfg(all(feature = "nix", not(target_os = "windows")))]
     if let Ok(fds) = xmpp_proxy::systemd::receive_descriptors_with_names(true) {
-        use xmpp_proxy::systemd::Listener;
+        use xmpp_proxy::systemd::SystemdListener;
         for fd in fds {
             match fd.listener() {
-                Listener::Tcp(tcp_listener) => {
-                    let tcp_listener = TcpListener::from_std(tcp_listener()).die("cannot open systemd TcpListener");
+                SystemdListener::Tcp(tcp_listener) => {
+                    let listener = Listener::Tcp(TcpListener::from_std(tcp_listener()).die("cannot open systemd TcpListener"));
                     if let Some(name) = fd.name().map(|n| n.to_ascii_lowercase()) {
                         if name.starts_with("in") {
-                            incoming_listen.push(tcp_listener);
+                            incoming_listen.push(listener);
                         } else if name.starts_with("out") {
-                            outgoing_listen.push(tcp_listener);
+                            outgoing_listen.push(listener);
                         } else {
-                            die!("systemd socket name must start with 'in' or 'out' but is '{}'", name);
+                            die!("systemd TCP socket name must start with 'in' or 'out' but is '{}'", name);
                         }
                     } else {
                         // what to do here... for now we will require names
@@ -169,14 +176,29 @@ async fn main() {
                         die!("systemd TCP socket activation requires name that starts with 'in' or 'out'");
                     }
                 }
-                Listener::Udp(udp_socket) => quic_listen.push(udp_socket()),
-                _ => continue,
+                SystemdListener::UnixListener(unix_listener) => {
+                    let listener = Listener::Unix(UnixListener::from_std(unix_listener()).die("cannot open systemd UnixListener"));
+                    if let Some(name) = fd.name().map(|n| n.to_ascii_lowercase()) {
+                        if name.starts_with("in") {
+                            incoming_listen.push(listener);
+                        } else if name.starts_with("out") {
+                            outgoing_listen.push(listener);
+                        } else {
+                            die!("systemd Unix socket name must start with 'in' or 'out' but is '{}'", name);
+                        }
+                    } else {
+                        // what to do here... for now we will require names
+                        die!("systemd Unix socket activation requires name that starts with 'in' or 'out'");
+                    }
+                }
+                SystemdListener::Udp(udp_socket) => quic_listen.push(UdpListener::Udp(udp_socket())),
+                SystemdListener::UnixDatagram(unix_datagram) => quic_listen.push(UdpListener::Unix(unix_datagram())),
             }
         }
     }
 
     #[cfg(feature = "incoming")]
-    let config = main_config.get_cloneable_cfg();
+    let config = Arc::new(main_config.get_incoming_cfg());
 
     let certs_key = Arc::new(CertsKey::new(main_config.certs_key()));
 
@@ -193,7 +215,13 @@ async fn main() {
             }
             let acceptor = tls_acceptor(server_config(certs_key.clone()).die("invalid cert/key ?"));
             for listener in incoming_listen {
-                handles.push(spawn_tls_listener(listener, config.clone(), acceptor.clone()));
+                // todo: first is slower at runtime but smaller executable size, second opposite
+                //handles.push(spawn_tls_listener(listener, config.clone(), acceptor.clone()));
+                match listener {
+                    Listener::Tcp(listener) => handles.push(spawn_tls_listener(listener, config.clone(), acceptor.clone())),
+                    #[cfg(not(target_os = "windows"))]
+                    Listener::Unix(listener) => handles.push(spawn_tls_listener(listener, config.clone(), acceptor.clone())),
+                }
             }
         }
         #[cfg(not(all(any(feature = "tls", feature = "websocket"), feature = "incoming")))]
@@ -211,7 +239,13 @@ async fn main() {
             }
             let quic_config = quic_server_config(server_config(certs_key.clone()).die("invalid cert/key ?"));
             for listener in quic_listen {
-                handles.push(spawn_quic_listener(listener, config.clone(), quic_config.clone()));
+                // todo: maybe write a way to Box<dyn> this thing for smaller executable sizes
+                //handles.push(spawn_quic_listener(listener, config.clone(), quic_config.clone()));
+                match listener {
+                    UdpListener::Udp(listener) => handles.push(spawn_quic_listener(listener, config.clone(), quic_config.clone())),
+                    #[cfg(not(target_os = "windows"))]
+                    UdpListener::Unix(listener) => handles.push(xmpp_proxy::quic::incoming::spawn_quic_listener_unix(listener, config.clone(), quic_config.clone())),
+                }
             }
         }
         #[cfg(not(all(feature = "quic", feature = "incoming")))]
@@ -222,8 +256,15 @@ async fn main() {
         {
             let outgoing_cfg = main_config.get_outgoing_cfg(certs_key.clone());
             for listener in outgoing_listen {
-                handles.push(spawn_outgoing_listener(listener, outgoing_cfg.clone()));
+                // todo: first is slower at runtime but smaller executable size, second opposite
+                //handles.push(spawn_outgoing_listener(listener, outgoing_cfg.clone()));
+                match listener {
+                    Listener::Tcp(listener) => handles.push(spawn_outgoing_listener(listener, outgoing_cfg.clone())),
+                    #[cfg(not(target_os = "windows"))]
+                    Listener::Unix(listener) => handles.push(spawn_outgoing_listener(listener, outgoing_cfg.clone())),
+                }
             }
+            //#[cfg(not(target_os = "windows"))]
         }
         #[cfg(not(feature = "outgoing"))]
         die!("outgoing_listen non-empty but c2s-outgoing and s2s-outgoing disabled at compile-time");

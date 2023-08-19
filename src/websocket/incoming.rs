@@ -1,16 +1,19 @@
 use crate::{
-    common::incoming::{shuffle_rd_wr_filter, CloneableConfig, ServerCerts},
+    common::{
+        incoming::{shuffle_rd_wr_filter, IncomingConfig, ServerCerts},
+        BoxAsyncReadWrite,
+    },
     context::Context,
     stanzafilter::StanzaFilter,
-    websocket::{incoming_websocket_connection, AsyncReadAndWrite},
+    websocket::incoming_websocket_connection,
 };
 use anyhow::Result;
 use log::info;
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 
 pub async fn handle_websocket_connection(
-    stream: Box<dyn AsyncReadAndWrite + Unpin + Send>,
-    config: CloneableConfig,
+    stream: BoxAsyncReadWrite,
+    config: Arc<IncomingConfig>,
     server_certs: ServerCerts,
     local_addr: SocketAddr,
     client_addr: &mut Context<'_>,

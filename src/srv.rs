@@ -473,7 +473,7 @@ pub async fn srv_connect(
         let (mut out_wr, mut out_rd, to_addr, proto) = connect.unwrap();
         // if any of these ? returns early with an Err, these will stay set, I think that's ok though, the connection will be closed
         client_addr.set_proto(proto);
-        client_addr.set_to_addr(to_addr);
+        client_addr.set_to_addr(to_addr.to_string());
         debug!("{} connected", client_addr.log_from());
 
         trace!("{} '{}'", client_addr.log_from(), to_str(stream_open));
@@ -906,7 +906,8 @@ mod tests {
         println!("posh: {:?}", posh);
     }
 
-    //#[tokio::test]
+    #[cfg(feature = "net-test")]
+    #[tokio::test]
     async fn posh() -> Result<()> {
         let domain = "posh.badxmpp.eu";
         let posh = collect_posh(domain).await.unwrap();
@@ -914,7 +915,8 @@ mod tests {
         Ok(())
     }
 
-    //#[tokio::test]
+    #[cfg(feature = "net-test")]
+    #[tokio::test]
     async fn srv() -> Result<()> {
         let domain = "burtrum.org";
         let is_c2s = true;
@@ -930,7 +932,8 @@ mod tests {
         Ok(())
     }
 
-    //#[tokio::test]
+    #[cfg(feature = "net-test")]
+    #[tokio::test]
     async fn http() -> Result<()> {
         let mut hosts = Vec::new();
         let mut sha256_pinnedpubkeys = Vec::new();
@@ -990,77 +993,78 @@ mod tests {
     #[test]
     fn test_dedup() {
         let domain = "example.org";
-        let mut ret = Vec::new();
-        ret.push(XmppConnection {
-            priority: 10,
-            weight: 0,
-            target: domain.to_string(),
-            conn_type: XmppConnectionType::DirectTLS,
-            port: 443,
-            secure: false,
-            ips: Vec::new(),
-            ech: None,
-        });
-        ret.push(XmppConnection {
-            priority: 0,
-            weight: 0,
-            target: domain.to_string(),
-            conn_type: XmppConnectionType::StartTLS,
-            port: 5222,
-            secure: false,
-            ips: Vec::new(),
-            ech: None,
-        });
-        ret.push(XmppConnection {
-            priority: 15,
-            weight: 0,
-            target: domain.to_string(),
-            conn_type: XmppConnectionType::DirectTLS,
-            port: 443,
-            secure: true,
-            ips: Vec::new(),
-            ech: None,
-        });
-        ret.push(XmppConnection {
-            priority: 10,
-            weight: 0,
-            target: domain.to_string(),
-            conn_type: XmppConnectionType::DirectTLS,
-            port: 443,
-            secure: true,
-            ips: Vec::new(),
-            ech: None,
-        });
-        ret.push(XmppConnection {
-            priority: 10,
-            weight: 50,
-            target: domain.to_string(),
-            conn_type: XmppConnectionType::DirectTLS,
-            port: 443,
-            secure: true,
-            ips: Vec::new(),
-            ech: None,
-        });
-        ret.push(XmppConnection {
-            priority: 10,
-            weight: 100,
-            target: "example.com".to_string(),
-            conn_type: XmppConnectionType::DirectTLS,
-            port: 443,
-            secure: true,
-            ips: Vec::new(),
-            ech: None,
-        });
-        ret.push(XmppConnection {
-            priority: 0,
-            weight: 100,
-            target: "example.com".to_string(),
-            conn_type: XmppConnectionType::DirectTLS,
-            port: 443,
-            secure: true,
-            ips: Vec::new(),
-            ech: None,
-        });
+        let mut ret = vec![
+            XmppConnection {
+                priority: 10,
+                weight: 0,
+                target: domain.to_string(),
+                conn_type: XmppConnectionType::DirectTLS,
+                port: 443,
+                secure: false,
+                ips: Vec::new(),
+                ech: None,
+            },
+            XmppConnection {
+                priority: 0,
+                weight: 0,
+                target: domain.to_string(),
+                conn_type: XmppConnectionType::StartTLS,
+                port: 5222,
+                secure: false,
+                ips: Vec::new(),
+                ech: None,
+            },
+            XmppConnection {
+                priority: 15,
+                weight: 0,
+                target: domain.to_string(),
+                conn_type: XmppConnectionType::DirectTLS,
+                port: 443,
+                secure: true,
+                ips: Vec::new(),
+                ech: None,
+            },
+            XmppConnection {
+                priority: 10,
+                weight: 0,
+                target: domain.to_string(),
+                conn_type: XmppConnectionType::DirectTLS,
+                port: 443,
+                secure: true,
+                ips: Vec::new(),
+                ech: None,
+            },
+            XmppConnection {
+                priority: 10,
+                weight: 50,
+                target: domain.to_string(),
+                conn_type: XmppConnectionType::DirectTLS,
+                port: 443,
+                secure: true,
+                ips: Vec::new(),
+                ech: None,
+            },
+            XmppConnection {
+                priority: 10,
+                weight: 100,
+                target: "example.com".to_string(),
+                conn_type: XmppConnectionType::DirectTLS,
+                port: 443,
+                secure: true,
+                ips: Vec::new(),
+                ech: None,
+            },
+            XmppConnection {
+                priority: 0,
+                weight: 100,
+                target: "example.com".to_string(),
+                conn_type: XmppConnectionType::DirectTLS,
+                port: 443,
+                secure: true,
+                ips: Vec::new(),
+                ech: None,
+            },
+        ];
         sort_dedup(&mut ret);
         println!("ret dedup: {:?}", ret);
     }

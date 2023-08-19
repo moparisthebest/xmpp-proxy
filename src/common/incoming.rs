@@ -1,5 +1,5 @@
 use crate::{
-    common::{c2s, certs_key::CertsKey, shuffle_rd_wr_filter_only, stream_preamble, to_str, ALPN_XMPP_CLIENT, ALPN_XMPP_SERVER},
+    common::{c2s, certs_key::CertsKey, shuffle_rd_wr_filter_only, stream_preamble, to_str, SocketAddrPath, ALPN_XMPP_CLIENT, ALPN_XMPP_SERVER},
     context::Context,
     in_out::{StanzaRead, StanzaWrite},
     slicesubsequence::SliceSubsequence,
@@ -8,16 +8,16 @@ use crate::{
 use anyhow::{anyhow, bail, Result};
 use log::trace;
 use rustls::{Certificate, ServerConfig, ServerConnection};
-use std::{io::Write, net::SocketAddr, sync::Arc};
-use tokio::io::{AsyncWriteExt, ReadHalf, WriteHalf};
 
-#[derive(Clone)]
-pub struct CloneableConfig {
+use std::{io::Write, net::SocketAddr, sync::Arc};
+use tokio::io::AsyncWriteExt;
+
+pub struct IncomingConfig {
     pub max_stanza_size_bytes: usize,
     #[cfg(feature = "s2s-incoming")]
-    pub s2s_target: Option<SocketAddr>,
+    pub s2s_target: Option<SocketAddrPath>,
     #[cfg(feature = "c2s-incoming")]
-    pub c2s_target: Option<SocketAddr>,
+    pub c2s_target: Option<SocketAddrPath>,
     pub proxy: bool,
 }
 
@@ -85,7 +85,7 @@ impl ServerCerts {
     }
 }
 
-pub async fn shuffle_rd_wr(in_rd: StanzaRead, in_wr: StanzaWrite, config: CloneableConfig, server_certs: ServerCerts, local_addr: SocketAddr, client_addr: &mut Context<'_>) -> Result<()> {
+pub async fn shuffle_rd_wr(in_rd: StanzaRead, in_wr: StanzaWrite, config: Arc<IncomingConfig>, server_certs: ServerCerts, local_addr: SocketAddr, client_addr: &mut Context<'_>) -> Result<()> {
     let filter = StanzaFilter::new(config.max_stanza_size_bytes);
     shuffle_rd_wr_filter(in_rd, in_wr, config, server_certs, local_addr, client_addr, filter).await
 }
@@ -93,7 +93,7 @@ pub async fn shuffle_rd_wr(in_rd: StanzaRead, in_wr: StanzaWrite, config: Clonea
 pub async fn shuffle_rd_wr_filter(
     mut in_rd: StanzaRead,
     mut in_wr: StanzaWrite,
-    config: CloneableConfig,
+    config: Arc<IncomingConfig>,
     server_certs: ServerCerts,
     local_addr: SocketAddr,
     client_addr: &mut Context<'_>,
@@ -131,43 +131,33 @@ pub async fn shuffle_rd_wr_filter(
     let (out_rd, out_wr) = open_incoming(&config, local_addr, client_addr, &stream_open, is_c2s, &mut in_filter).await?;
     drop(stream_open);
 
-    shuffle_rd_wr_filter_only(
-        in_rd,
-        in_wr,
-        StanzaRead::new(out_rd),
-        StanzaWrite::new(out_wr),
-        is_c2s,
-        config.max_stanza_size_bytes,
-        client_addr,
-        in_filter,
-    )
-    .await
+    shuffle_rd_wr_filter_only(in_rd, in_wr, out_rd, out_wr, is_c2s, config.max_stanza_size_bytes, client_addr, in_filter).await
 }
 
 async fn open_incoming(
-    config: &CloneableConfig,
+    config: &IncomingConfig,
     local_addr: SocketAddr,
     client_addr: &mut Context<'_>,
     stream_open: &[u8],
     is_c2s: bool,
     in_filter: &mut StanzaFilter,
-) -> Result<(ReadHalf<tokio::net::TcpStream>, WriteHalf<tokio::net::TcpStream>)> {
-    let target: Option<SocketAddr> = if is_c2s {
+) -> Result<(StanzaRead, StanzaWrite)> {
+    let target: &Option<SocketAddrPath> = if is_c2s {
         #[cfg(not(feature = "c2s-incoming"))]
         bail!("incoming c2s connection but lacking compile-time support");
         #[cfg(feature = "c2s-incoming")]
-        config.c2s_target
+        &config.c2s_target
     } else {
         #[cfg(not(feature = "s2s-incoming"))]
         bail!("incoming s2s connection but lacking compile-time support");
         #[cfg(feature = "s2s-incoming")]
-        config.s2s_target
+        &config.s2s_target
     };
-    let target = target.ok_or_else(|| anyhow!("incoming connection but `{}_target` not defined", c2s(is_c2s)))?;
-    client_addr.set_to_addr(target);
+    let target = target.as_ref().ok_or_else(|| anyhow!("incoming connection but `{}_target` not defined", c2s(is_c2s)))?;
+    client_addr.set_to_addr(target.to_string());
 
-    let out_stream = tokio::net::TcpStream::connect(target).await?;
-    let (out_rd, mut out_wr) = tokio::io::split(out_stream);
+    let (out_rd, mut out_wr) = target.connect().await?;
+    let out_rd = StanzaRead::new(out_rd);
 
     if config.proxy {
         /*
@@ -194,5 +184,5 @@ async fn open_incoming(
     trace!("{} '{}'", client_addr.log_from(), to_str(stream_open));
     out_wr.write_all(stream_open).await?;
     out_wr.flush().await?;
-    Ok((out_rd, out_wr))
+    Ok((out_rd, StanzaWrite::AsyncWrite(out_wr)))
 }

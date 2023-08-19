@@ -1,7 +1,9 @@
 use crate::{
     common::{
-        incoming::{shuffle_rd_wr_filter, CloneableConfig, ServerCerts},
-        to_str, Peek, Split, IN_BUFFER_SIZE,
+        first_bytes_match_buf_timeout,
+        incoming::{shuffle_rd_wr_filter, IncomingConfig, ServerCerts},
+        stream_listener::StreamListener,
+        to_str, AsyncReadWritePeekSplit, Split, IN_BUFFER_SIZE,
     },
     context::Context,
     in_out::{StanzaRead, StanzaWrite},
@@ -13,8 +15,7 @@ use log::{error, info, trace};
 use rustls::{ServerConfig, ServerConnection};
 use std::{net::SocketAddr, sync::Arc};
 use tokio::{
-    io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufStream},
-    net::TcpListener,
+    io::{AsyncWriteExt, BufStream},
     task::JoinHandle,
 };
 use tokio_rustls::TlsAcceptor;
@@ -23,7 +24,7 @@ pub fn tls_acceptor(server_config: ServerConfig) -> TlsAcceptor {
     TlsAcceptor::from(Arc::new(server_config))
 }
 
-pub fn spawn_tls_listener(listener: TcpListener, config: CloneableConfig, acceptor: TlsAcceptor) -> JoinHandle<Result<()>> {
+pub fn spawn_tls_listener(listener: impl StreamListener, config: Arc<IncomingConfig>, acceptor: TlsAcceptor) -> JoinHandle<Result<()>> {
     tokio::spawn(async move {
         let local_addr = listener.local_addr()?;
         loop {
@@ -40,13 +41,7 @@ pub fn spawn_tls_listener(listener: TcpListener, config: CloneableConfig, accept
     })
 }
 
-pub async fn handle_tls_connection<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + Peek + Split + 'static>(
-    mut stream: S,
-    client_addr: &mut Context<'_>,
-    local_addr: SocketAddr,
-    config: CloneableConfig,
-    acceptor: TlsAcceptor,
-) -> Result<()> {
+pub async fn handle_tls_connection<S: AsyncReadWritePeekSplit>(mut stream: S, client_addr: &mut Context<'_>, local_addr: SocketAddr, config: Arc<IncomingConfig>, acceptor: TlsAcceptor) -> Result<()> {
     info!("{} connected", client_addr.log_from());
 
     let mut in_filter = StanzaFilter::new(config.max_stanza_size_bytes);
@@ -67,11 +62,10 @@ pub async fn handle_tls_connection<S: AsyncRead + AsyncWrite + Unpin + Send + Sy
         let mut proceed_sent = false;
 
         let (in_rd, mut in_wr) = stream.split();
-        // todo: more efficient version for TCP:
-        //let (in_rd, mut in_wr) = stream.split();
 
         // we naively read 1 byte at a time, which buffering significantly speeds up
-        let in_rd = tokio::io::BufReader::with_capacity(IN_BUFFER_SIZE, in_rd);
+        // todo: I don't think we can buffer here, because then we throw away the data left in the buffer? yet it's been working... am I losing my mind?
+        //let in_rd = tokio::io::BufReader::with_capacity(IN_BUFFER_SIZE, in_rd);
         let mut in_rd = StanzaReader(in_rd);
 
         while let Ok(Some(buf)) = in_rd.next(&mut in_filter).await {
@@ -117,7 +111,7 @@ pub async fn handle_tls_connection<S: AsyncRead + AsyncWrite + Unpin + Send + Sy
         if !proceed_sent {
             bail!("stream ended before open");
         }
-        <S as Split>::combine(in_rd.0.into_inner(), in_wr)?
+        <S as Split>::combine(in_rd.0, in_wr)?
     } else {
         stream
     };
@@ -143,20 +137,19 @@ pub async fn handle_tls_connection<S: AsyncRead + AsyncWrite + Unpin + Send + Sy
 
     #[cfg(not(feature = "websocket"))]
     {
-        let (in_rd, in_wr) = tokio::io::split(stream);
+        let (in_rd, in_wr) = stream.split();
         shuffle_rd_wr_filter(StanzaRead::new(in_rd), StanzaWrite::new(in_wr), config, server_certs, local_addr, client_addr, in_filter).await
     }
 
     #[cfg(feature = "websocket")]
     {
         let mut stream = BufStream::with_capacity(IN_BUFFER_SIZE, 0, stream);
-
-        let websocket = stream.first_bytes_match(&mut in_filter.buf[0..3], |b| b == b"GET").await?;
+        let websocket = first_bytes_match_buf_timeout(&mut stream, 3, |p| p == b"GET").await?;
 
         if websocket {
             crate::websocket::incoming::handle_websocket_connection(Box::new(stream), config, server_certs, local_addr, client_addr, in_filter).await
         } else {
-            let (in_rd, in_wr) = tokio::io::split(stream);
+            let (in_rd, in_wr) = stream.split();
             shuffle_rd_wr_filter(StanzaRead::already_buffered(in_rd), StanzaWrite::new(in_wr), config, server_certs, local_addr, client_addr, in_filter).await
         }
     }
