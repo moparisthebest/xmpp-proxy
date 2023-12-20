@@ -11,11 +11,11 @@
 [![Build Status](https://ci.moparisthe.best/job/moparisthebest/job/xmpp-proxy/job/master/badge/icon%3Fstyle=plastic)](https://ci.moparisthe.best/job/moparisthebest/job/xmpp-proxy/job/master/)
 
 xmpp-proxy is a reverse proxy and outgoing proxy for XMPP servers and clients, providing [STARTTLS], [Direct TLS], [QUIC],
-[WebSocket C2S], and [WebSocket S2S] connectivity to plain-text XMPP servers and clients and limiting stanza sizes without an XML parser.
+[WebSocket C2S], [WebSocket S2S], and [WebTransport] connectivity to plain-text XMPP servers and clients and limiting stanza sizes without an XML parser.
 
 xmpp-proxy in reverse proxy (incoming) mode will:
   1. listen on any number of interfaces/ports
-  2. accept any STARTTLS, Direct TLS, QUIC, or WebSocket c2s or s2s connections from the internet
+  2. accept any STARTTLS, Direct TLS, QUIC, WebSocket, or WebTransport c2s or s2s connections from the internet
   3. terminate TLS
   4. for s2s require a client cert and validate it correctly (using CAs, host-meta, host-meta2, and POSH) for SASL EXTERNAL auth
   5. connect them to a local real XMPP server over plain-text TCP
@@ -25,8 +25,8 @@ xmpp-proxy in reverse proxy (incoming) mode will:
 xmpp-proxy in outgoing mode will:
   1. listen on any number of interfaces/ports
   2. accept any plain-text TCP or WebSocket connection from a local XMPP server or client
-  3. look up the required SRV, [host-meta], host-meta2, and [POSH] records
-  4. connect to a real XMPP server across the internet over STARTTLS, Direct TLS, QUIC, or WebSocket
+  3. look up the required SRV, [host-meta], [host-meta2], and [POSH] records
+  4. connect to a real XMPP server across the internet over STARTTLS, Direct TLS, QUIC, WebSocket, or WebTransport
   5. fallback to next SRV target or defaults as required to fully connect
   6. perform all the proper required certificate validation logic
   7. limit incoming stanza sizes as configured
@@ -137,10 +137,11 @@ choose between 1-4 directions:
   3. `s2s-incoming` - enables a server to accept incoming s2s connections
   4. `s2s-outgoing` - enables a server to make outgoing s2s connections
 
-choose between 1-3 transport protocols:
+choose between 1-4 transport protocols:
   1. `tls` - enables STARTTLS/TLS support
   2. `quic` - enables QUIC support
   3. `websocket` - enables WebSocket support, also enables TLS incoming support if the appropriate directions are enabled
+  4. `webtransport` - enables WebTransport support, also enables QUIC
 
 choose exactly 1 of these methods to get trusted CA roots, not needed if only `c2s-incoming` is enabled:
   1. `tls-ca-roots-native` - reads CA roots from operating system
@@ -168,15 +169,18 @@ GNU/AGPLv3 - Check LICENSE.md for details
 Thanks [rxml](https://github.com/horazont/rxml) for afl-fuzz seeds
 
 #### Todo
-  1. write "host-meta2" XEP for QUIC and WebSocket S2S Discovery
-  2. optional [systemd](https://www.freedesktop.org/software/systemd/man/sd_listen_fds.html) [integration](https://mgdm.net/weblog/systemd/)
-  3. seamless Tor integration, connecting to and from .onion domains
+  1. seamless Tor integration, connecting to and from .onion domains
+  2. Write WebTransport XEP
+  3. Document systemd activation support
+  4. Document use-as-a-library support
 
 [STARTTLS]: https://datatracker.ietf.org/doc/html/rfc6120#section-5
 [Direct TLS]: https://xmpp.org/extensions/xep-0368.html
 [QUIC]: https://xmpp.org/extensions/xep-0467.html
 [WebSocket C2S]: https://datatracker.ietf.org/doc/html/rfc7395
 [WebSocket S2S]: https://xmpp.org/extensions/xep-0468.html
+[WebTransport]: https://www.w3.org/TR/webtransport/
 [POSH]: https://datatracker.ietf.org/doc/html/rfc7711
 [host-meta]: https://xmpp.org/extensions/xep-0156.html
+[host-meta2]: https://xmpp.org/extensions/inbox/host-meta-2.html
 [PROXY protocol]: https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt

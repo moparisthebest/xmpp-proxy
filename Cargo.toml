@@ -68,11 +68,14 @@ rustls-pemfile = { version = "1.0", optional = true }
 tokio-tungstenite = { version = "0.19", optional = true, default-features = false, features = ["handshake"] }
 futures-util = { version = "0.3", default-features = false, features = ["async-await", "sink", "std"], optional = true }
 
+# webtransport deps
+webtransport-quinn = { version = "0.6", optional = true }
+
 # systemd dep
 nix = { version = "0.26", optional = true, default-features = false, features = ["socket"]}
 
 [features]
-default = ["c2s-incoming", "c2s-outgoing", "s2s-incoming", "s2s-outgoing", "tls", "quic", "websocket", "logging", "tls-ca-roots-native", "systemd"]
+default = ["c2s-incoming", "c2s-outgoing", "s2s-incoming", "s2s-outgoing", "tls", "quic", "websocket", "webtransport", "logging", "tls-ca-roots-native", "systemd"]
 
 # you must pick one of these or the other, not both: todo: enable picking both and choosing at runtime
 # don't need either of these if only doing c2s-incoming
@@ -97,6 +100,7 @@ s2s-outgoing = ["outgoing", "s2s"]
 tls = ["tokio-rustls", "webpki", "rustls"]
 quic = ["quinn", "rustls"]
 websocket = ["tokio-tungstenite", "futures-util", "tls"] # websocket+incoming also enables incoming TLS support as it's free
+webtransport = ["webtransport-quinn", "quic"] # webtransport requires quic
 
 logging = ["rand", "env_logger"]
 systemd = ["nix"]
@@ -106,3 +110,8 @@ net-test = []
 
 [dev-dependencies]
 serde_json = "1.0"
+
+# need this until a release is made with this commit in it
+[patch.crates-io]
+webtransport-quinn = { git = "https://github.com/kixelated/webtransport-rs", rev = "ba1a372a7a89e4ba9f9bc027733f82f87aa9a4fd" }
+

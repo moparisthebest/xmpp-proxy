@@ -19,6 +19,13 @@ impl OutgoingConfig {
             _ => ClientConfig::builder().with_safe_defaults().with_custom_certificate_verifier(cert_verifier).with_no_client_auth(),
         };
 
+        #[cfg(feature = "webtransport")]
+        let config_webtransport_alpn = {
+            let mut config = config.clone();
+            config.alpn_protocols.push(webtransport_quinn::ALPN.to_vec());
+            Arc::new(config)
+        };
+
         let mut config_alpn = config.clone();
         config_alpn.alpn_protocols.push(if is_c2s { ALPN_XMPP_CLIENT } else { ALPN_XMPP_SERVER }.to_vec());
 
@@ -30,6 +37,8 @@ impl OutgoingConfig {
 
         OutgoingVerifierConfig {
             max_stanza_size_bytes: self.max_stanza_size_bytes,
+            #[cfg(feature = "webtransport")]
+            config_webtransport_alpn,
             config_alpn,
             connector_alpn,
             connector,
@@ -40,6 +49,9 @@ impl OutgoingConfig {
 #[derive(Clone)]
 pub struct OutgoingVerifierConfig {
     pub max_stanza_size_bytes: usize,
+
+    #[cfg(feature = "webtransport")]
+    pub config_webtransport_alpn: Arc<ClientConfig>,
 
     pub config_alpn: Arc<ClientConfig>,
     pub connector_alpn: TlsConnector,

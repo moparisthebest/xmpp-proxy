@@ -1921,6 +1921,43 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "14247bb57be4f377dfb94c72830b8ce8fc6beac03cf4bf7b9732eadd414123fc"
 
 [[package]]
+name = "webtransport-generic"
+version = "0.5.0"
+source = "git+https://github.com/kixelated/webtransport-rs?rev=ba1a372a7a89e4ba9f9bc027733f82f87aa9a4fd#ba1a372a7a89e4ba9f9bc027733f82f87aa9a4fd"
+dependencies = [
+ "tokio",
+]
+
+[[package]]
+name = "webtransport-proto"
+version = "0.6.0"
+source = "git+https://github.com/kixelated/webtransport-rs?rev=ba1a372a7a89e4ba9f9bc027733f82f87aa9a4fd#ba1a372a7a89e4ba9f9bc027733f82f87aa9a4fd"
+dependencies = [
+ "bytes",
+ "http",
+ "thiserror",
+ "url",
+]
+
+[[package]]
+name = "webtransport-quinn"
+version = "0.6.1"
+source = "git+https://github.com/kixelated/webtransport-rs?rev=ba1a372a7a89e4ba9f9bc027733f82f87aa9a4fd#ba1a372a7a89e4ba9f9bc027733f82f87aa9a4fd"
+dependencies = [
+ "bytes",
+ "futures",
+ "http",
+ "log",
+ "quinn",
+ "quinn-proto",
+ "thiserror",
+ "tokio",
+ "url",
+ "webtransport-generic",
+ "webtransport-proto",
+]
+
+[[package]]
 name = "widestring"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2088,4 +2125,5 @@ dependencies = [
  "toml",
  "trust-dns-resolver",
  "webpki-roots",
+ "webtransport-quinn",
 ]

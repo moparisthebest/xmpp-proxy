@@ -127,12 +127,12 @@ pub async fn handle_tls_connection<S: AsyncReadWritePeekSplit>(mut stream: S, cl
     // where we read the first stanza, where we are guaranteed the handshake is complete, but I can't
     // do that without ignoring the lifetime and just pulling a C programmer and pinky promising to be
     // *very careful* that this reference doesn't outlive stream...
-    #[cfg(feature = "s2s-incoming")]
+    #[cfg(any(feature = "s2s-incoming", feature = "webtransport"))]
     let server_certs = {
         let server_connection: &'static ServerConnection = unsafe { std::mem::transmute(server_connection) };
         ServerCerts::Tls(server_connection)
     };
-    #[cfg(not(feature = "s2s-incoming"))]
+    #[cfg(not(any(feature = "s2s-incoming", feature = "webtransport")))]
     let server_certs = ();
 
     #[cfg(not(feature = "websocket"))]

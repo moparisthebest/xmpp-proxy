@@ -47,7 +47,7 @@ perms_optional() {
 all_features() {
   for optional in "" $(perms_optional logging systemd)
   do
-    for proto in $(perms tls quic websocket)
+    for proto in $(perms tls quic websocket webtransport)
     do
       for direction in $(perms c2s-incoming c2s-outgoing s2s-incoming s2s-outgoing)
       do
@@ -61,7 +61,7 @@ all_features() {
 
   for optional in "" $(perms_optional logging systemd)
   do
-    for proto in $(perms tls quic websocket)
+    for proto in $(perms tls quic websocket webtransport)
     do
       echo c2s-incoming,$proto$optional
     done

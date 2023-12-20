@@ -1,19 +1,19 @@
 
-# interfaces to listen for reverse proxy STARTTLS/Direct TLS/TLS WebSocket (wss) XMPP connections on, should be open to the internet
-incoming_listen = [ "0.0.0.0:5222", "0.0.0.0:5269", "0.0.0.0:443" ]
-# interfaces to listen for reverse proxy QUIC/WebTransport XMPP connections on, should be open to the internet
+# interfaces to listen for reverse proxy STARTTLS/Direct TLS XMPP connections on, should be open to the internet
+# incoming_listen = [ "0.0.0.0:5281" ]
+# interfaces to listen for reverse proxy QUIC XMPP connections on, should be open to the internet
 quic_listen = [ "0.0.0.0:443" ]
-# interfaces to listen for outgoing proxy TCP or WebSocket XMPP connections on, should be localhost or a path for a unix socket
-outgoing_listen = [ "127.0.0.1:15270" ]
+# interfaces to listen for outgoing proxy TCP XMPP connections on, should be localhost
+outgoing_listen = [ "0.0.0.0:15270" ]
 
 # these ports shouldn't do any TLS, but should assume any connection from xmpp-proxy is secure
 # prosody module: https://modules.prosody.im/mod_secure_interfaces.html
 
 # c2s port backend XMPP server listens on
-c2s_target = "127.0.0.1:15222"
+c2s_target = "192.5.0.20:15222"
 
 # s2s port backend XMPP server listens on
-s2s_target = "127.0.0.1:15269"
+s2s_target = "192.5.0.20:15269"
 
 # send PROXYv1 header to backend XMPP server
 # https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt
@@ -28,15 +28,15 @@ max_stanza_size_bytes = 262_144
 
 # TLS key/certificate valid for all your XMPP domains, PEM format
 # included systemd unit can only read files from /etc/xmpp-proxy/ so put them in there
-tls_key = "/etc/xmpp-proxy/le.key"
-tls_cert = "/etc/xmpp-proxy/fullchain.cer"
+tls_key = "/etc/prosody/certs/xp1.example.org.key"
+tls_cert = "/etc/prosody/certs/xp1.example.org.crt"
 
 # configure logging, defaults are commented
 # can also set env variables XMPP_PROXY_LOG_LEVEL and/or XMPP_PROXY_LOG_STYLE, but values in this file override them
 # many options, trace is XML-console-level, refer to: https://docs.rs/env_logger/0.8.3/env_logger/#enabling-logging
 #log_level = "info"
 # for development/debugging:
-#log_level = "info,xmpp_proxy=trace"
+log_level = "info,xmpp_proxy=trace"
 
 # one of auto, always, never, refer to: https://docs.rs/env_logger/0.8.3/env_logger/#disabling-colors
 #log_style = "never"

@@ -36,26 +36,21 @@ fn internal_spawn_quic_listener(incoming: Endpoint, local_addr: SocketAddr, conf
             tokio::spawn(async move {
                 if let Ok(new_conn) = incoming_conn.await {
                     let client_addr = Context::new("quic-in", new_conn.remote_address());
-
-                    let new_conn = Arc::new(new_conn);
-                    #[cfg(feature = "s2s-incoming")]
-                    let server_certs = ServerCerts::Quic(new_conn.clone());
-                    #[cfg(not(feature = "s2s-incoming"))]
-                    let server_certs = ();
-
                     info!("{} connected new connection", client_addr.log_from());
 
-                    while let Ok((wrt, rd)) = new_conn.accept_bi().await {
-                        let config = config.clone();
-                        let mut client_addr = client_addr.clone();
-                        let server_certs = server_certs.clone();
-                        info!("{} connected new stream", client_addr.log_from());
-                        tokio::spawn(async move {
-                            if let Err(e) = shuffle_rd_wr(StanzaRead::new(rd), StanzaWrite::new(wrt), config, server_certs, local_addr, &mut client_addr).await {
-                                error!("{} {}", client_addr.log_from(), e);
-                            }
-                        });
-                    }
+                    #[cfg(any(feature = "s2s-incoming", feature = "webtransport"))]
+                    let server_certs = {
+                        let server_certs = ServerCerts::quic(&new_conn);
+                        #[cfg(feature = "webtransport")]
+                        if server_certs.alpn().map(|a| a == webtransport_quinn::ALPN).unwrap_or(false) {
+                            return crate::webtransport::incoming::handle_webtransport_session(new_conn, config, server_certs, local_addr, client_addr).await;
+                        }
+                        server_certs
+                    };
+                    #[cfg(not(any(feature = "s2s-incoming", feature = "webtransport")))]
+                    let server_certs = ();
+
+                    handle_quic_session(new_conn, config, server_certs, local_addr, client_addr).await
                 }
             });
         }
@@ -64,7 +59,23 @@ fn internal_spawn_quic_listener(incoming: Endpoint, local_addr: SocketAddr, conf
     })
 }
 
-pub fn quic_server_config(server_config: rustls::ServerConfig) -> ServerConfig {
+pub async fn handle_quic_session(conn: quinn::Connection, config: Arc<IncomingConfig>, server_certs: ServerCerts, local_addr: SocketAddr, client_addr: Context<'static>) {
+    while let Ok((wrt, rd)) = conn.accept_bi().await {
+        let config = config.clone();
+        let mut client_addr = client_addr.clone();
+        let server_certs = server_certs.clone();
+        info!("{} connected new stream", client_addr.log_from());
+        tokio::spawn(async move {
+            if let Err(e) = shuffle_rd_wr(StanzaRead::new(rd), StanzaWrite::new(wrt), config, server_certs, local_addr, &mut client_addr).await {
+                error!("{} {}", client_addr.log_from(), e);
+            }
+        });
+    }
+}
+
+pub fn quic_server_config(mut server_config: rustls::ServerConfig) -> ServerConfig {
+    #[cfg(feature = "webtransport")]
+    server_config.alpn_protocols.push(webtransport_quinn::ALPN.to_vec());
     let transport_config = quinn::TransportConfig::default();
     // todo: configure transport_config here if needed
     let mut server_config = ServerConfig::with_crypto(Arc::new(server_config));

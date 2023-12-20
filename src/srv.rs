@@ -13,7 +13,7 @@ use crate::{
 use anyhow::{bail, Result};
 use data_encoding::BASE64;
 use log::{debug, error, trace};
-use reqwest::Client;
+use reqwest::{Client, Url};
 use ring::digest::{Algorithm, Context as DigestContext, SHA256, SHA512};
 use serde::Deserialize;
 use std::{
@@ -60,7 +60,10 @@ enum XmppConnectionType {
     #[cfg(feature = "quic")]
     QUIC,
     #[cfg(feature = "websocket")]
+    //        uri, origin
     WebSocket(Uri, String),
+    #[cfg(feature = "webtransport")]
+    WebTransport(Url),
 }
 
 impl XmppConnectionType {
@@ -69,11 +72,13 @@ impl XmppConnectionType {
             #[cfg(feature = "quic")]
             XmppConnectionType::QUIC => 0,
             #[cfg(feature = "tls")]
-            XmppConnectionType::DirectTLS => 1,
+            XmppConnectionType::DirectTLS => 2,
             #[cfg(feature = "tls")]
-            XmppConnectionType::StartTLS => 2,
+            XmppConnectionType::StartTLS => 3,
             #[cfg(feature = "websocket")]
-            XmppConnectionType::WebSocket(_, _) => 3,
+            XmppConnectionType::WebSocket(_, _) => 4,
+            #[cfg(feature = "webtransport")]
+            XmppConnectionType::WebTransport(_) => 1,
         }
     }
 }
@@ -84,7 +89,7 @@ impl Ord for XmppConnectionType {
         if cmp != Ordering::Equal {
             return cmp;
         }
-        // so they are the same type, but WebSocket is a special case...
+        // so they are the same type, but WebSocket and WebTransport is a special case...
         match (self, other) {
             #[cfg(feature = "websocket")]
             (XmppConnectionType::WebSocket(self_uri, self_origin), XmppConnectionType::WebSocket(other_uri, other_origin)) => {
@@ -94,6 +99,8 @@ impl Ord for XmppConnectionType {
                 }
                 self_origin.cmp(other_origin)
             }
+            #[cfg(feature = "webtransport")]
+            (XmppConnectionType::WebTransport(self_url), XmppConnectionType::WebTransport(other_url)) => self_url.cmp(other_url),
             (_, _) => Ordering::Equal,
         }
     }
@@ -237,6 +244,20 @@ impl XmppConnection {
                         }
                     }
                 },
+                #[cfg(feature = "webtransport")]
+                XmppConnectionType::WebTransport(ref url) => match crate::webtransport::outgoing::webtransport_connect(to_addr, domain, url, config).await {
+                    Ok((wr, rd)) => return Ok((wr, rd, to_addr, "webtransport-out")),
+                    Err(e) => {
+                        if self.secure && self.target != orig_domain {
+                            match crate::webtransport::outgoing::webtransport_connect(to_addr, orig_domain, url, config).await {
+                                Ok((wr, rd)) => return Ok((wr, rd, to_addr, "webtransport-out")),
+                                Err(e2) => error!("webtransport connection failed to IP {} from URL {}, error try 1: {}, error try 2: {}", to_addr, url, e, e2),
+                            }
+                        } else {
+                            error!("websocket connection failed to IP {} from URL {}, error: {}", to_addr, url, e)
+                        }
+                    }
+                },
             }
         }
         bail!("cannot connect to any IPs for SRV: {}", self.target)
@@ -299,6 +320,21 @@ fn wss_to_srv(url: &str, secure: bool) -> Option<XmppConnection> {
         ips: Vec::new(),
         ech: None,
     })
+}
+
+#[cfg(feature = "webtransport")]
+fn wt_to_srv(url: &str) -> Option<(XmppConnectionType, u16)> {
+    let url = match Url::parse(url) {
+        Ok(url) => url,
+        Err(e) => {
+            debug!("invalid URL record '{}': {}", url, e);
+            return None;
+        }
+    };
+
+    let port = if let Some(port) = url.port() { port } else { 443 };
+
+    Some((XmppConnectionType::WebTransport(url), port))
 }
 
 #[cfg(feature = "websocket")]
@@ -534,6 +570,12 @@ enum Link {
         #[serde(flatten)]
         link: Option<LinkCommon>,
     },
+    #[serde(rename = "urn:xmpp:alt-connections:webtransport")]
+    WebTransport {
+        href: String,
+        #[serde(flatten)]
+        link: LinkCommon,
+    },
     #[serde(rename = "urn:xmpp:alt-connections:tls")]
     DirectTLS {
         #[serde(flatten)]
@@ -545,6 +587,12 @@ enum Link {
         #[serde(flatten)]
         link: LinkCommon,
         port: u16,
+    },
+    #[serde(rename = "urn:xmpp:alt-connections:s2s-webtransport")]
+    S2SWebTransport {
+        href: String,
+        #[serde(flatten)]
+        link: LinkCommon,
     },
     #[serde(rename = "urn:xmpp:alt-connections:s2s-websocket")]
     S2SWebSocket {
@@ -626,6 +674,24 @@ impl Link {
                 return if !is_c2s {
                     let srv = wss_to_srv(&href, true)?;
                     link.into_xmpp_connection(srv.conn_type, srv.port)
+                } else {
+                    None
+                };
+            }
+            #[cfg(feature = "webtransport")]
+            Link::WebTransport { href, link } => {
+                return if is_c2s {
+                    let (conn_type, port) = wt_to_srv(&href)?;
+                    link.into_xmpp_connection(conn_type, port)
+                } else {
+                    None
+                };
+            }
+            #[cfg(feature = "webtransport")]
+            Link::S2SWebTransport { href, link } => {
+                return if !is_c2s {
+                    let (conn_type, port) = wt_to_srv(&href)?;
+                    link.into_xmpp_connection(conn_type, port)
                 } else {
                     None
                 };

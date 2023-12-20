@@ -39,24 +39,35 @@ pub fn server_config(certs_key: Arc<CertsKey>) -> Result<ServerConfig> {
     Ok(config)
 }
 
-#[cfg(not(feature = "s2s-incoming"))]
+#[cfg(not(any(feature = "s2s-incoming", feature = "webtransport")))]
 pub type ServerCerts = ();
 
-#[cfg(feature = "s2s-incoming")]
+#[cfg(any(feature = "s2s-incoming", feature = "webtransport"))]
 #[derive(Clone)]
 pub enum ServerCerts {
     Tls(&'static ServerConnection),
     #[cfg(feature = "quic")]
-    Quic(Arc<quinn::Connection>),
+    Quic(Option<Vec<Certificate>>, Option<String>, Option<Vec<u8>>), // todo: wrap this in arc or something now
 }
 
-#[cfg(feature = "s2s-incoming")]
+#[cfg(any(feature = "s2s-incoming", feature = "webtransport"))]
 impl ServerCerts {
+    #[cfg(feature = "quic")]
+    pub fn quic(conn: &quinn::Connection) -> ServerCerts {
+        let certs = conn.peer_identity().and_then(|v| v.downcast::<Vec<Certificate>>().ok()).map(|v| v.to_vec());
+        let (sni, alpn) = conn
+            .handshake_data()
+            .and_then(|v| v.downcast::<quinn::crypto::rustls::HandshakeData>().ok())
+            .map(|h| (h.server_name, h.protocol))
+            .unwrap_or_default();
+        ServerCerts::Quic(certs, sni, alpn)
+    }
+
     pub fn peer_certificates(&self) -> Option<Vec<Certificate>> {
         match self {
             ServerCerts::Tls(c) => c.peer_certificates().map(|c| c.to_vec()),
             #[cfg(feature = "quic")]
-            ServerCerts::Quic(c) => c.peer_identity().and_then(|v| v.downcast::<Vec<Certificate>>().ok()).map(|v| v.to_vec()),
+            ServerCerts::Quic(certs, _, _) => certs.clone(),
         }
     }
 
@@ -64,7 +75,7 @@ impl ServerCerts {
         match self {
             ServerCerts::Tls(c) => c.server_name().map(|s| s.to_string()),
             #[cfg(feature = "quic")]
-            ServerCerts::Quic(c) => c.handshake_data().and_then(|v| v.downcast::<quinn::crypto::rustls::HandshakeData>().ok()).and_then(|h| h.server_name),
+            ServerCerts::Quic(_, sni, _) => sni.clone(),
         }
     }
 
@@ -72,7 +83,7 @@ impl ServerCerts {
         match self {
             ServerCerts::Tls(c) => c.alpn_protocol().map(|s| s.to_vec()),
             #[cfg(feature = "quic")]
-            ServerCerts::Quic(c) => c.handshake_data().and_then(|v| v.downcast::<quinn::crypto::rustls::HandshakeData>().ok()).and_then(|h| h.protocol),
+            ServerCerts::Quic(_, _, alpn) => alpn.clone(),
         }
     }
 
@@ -80,7 +91,7 @@ impl ServerCerts {
         match self {
             ServerCerts::Tls(_) => true,
             #[cfg(feature = "quic")]
-            ServerCerts::Quic(_) => false,
+            ServerCerts::Quic(_, _, _) => false,
         }
     }
 }

@@ -17,6 +17,9 @@ pub mod srv;
 #[cfg(feature = "websocket")]
 pub mod websocket;
 
+#[cfg(feature = "webtransport")]
+pub mod webtransport;
+
 #[cfg(any(feature = "s2s-incoming", feature = "outgoing"))]
 pub mod verify;
 
