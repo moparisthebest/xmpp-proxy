@@ -23,10 +23,10 @@ pub type WsRd = SplitStream<WebSocketStream<BoxAsyncReadWrite>>;
 
 fn ws_cfg(max_stanza_size_bytes: usize) -> Option<WebSocketConfig> {
     Some(WebSocketConfig {
-        max_send_queue: None,                              // unlimited
         max_frame_size: Some(max_stanza_size_bytes),       // this is exactly the stanza size
         max_message_size: Some(max_stanza_size_bytes * 4), // this is the message size, default is 4x frame size, so I guess we'll do the same here
         accept_unmasked_frames: true,
+        ..Default::default()
     })
 }
 

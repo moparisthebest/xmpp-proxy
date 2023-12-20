@@ -1,5 +1,6 @@
 use anyhow::{anyhow, bail, Result};
 use nix::sys::socket::{getsockname, getsockopt, AddressFamily, SockType, SockaddrLike, SockaddrStorage};
+use std::os::fd::BorrowedFd;
 use std::{
     env,
     net::{TcpListener, UdpSocket},
@@ -114,11 +115,13 @@ fn socks_from_fds(num_fds: usize, names: Vec<String>) -> Result<Vec<FileDescript
 }
 
 fn sock_listening(raw_fd: RawFd) -> bool {
-    getsockopt(raw_fd, nix::sys::socket::sockopt::AcceptConn).unwrap_or(false)
+    let raw_fd = unsafe { BorrowedFd::borrow_raw(raw_fd) };
+    getsockopt(&raw_fd, nix::sys::socket::sockopt::AcceptConn).unwrap_or(false)
 }
 
 fn sock_type(raw_fd: RawFd) -> Option<SockType> {
-    getsockopt(raw_fd, nix::sys::socket::sockopt::SockType).ok()
+    let raw_fd = unsafe { BorrowedFd::borrow_raw(raw_fd) };
+    getsockopt(&raw_fd, nix::sys::socket::sockopt::SockType).ok()
 }
 
 fn address_family(raw_fd: RawFd) -> Option<AddressFamily> {

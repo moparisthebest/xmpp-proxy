@@ -39,7 +39,7 @@ lazy_static::lazy_static! {
 fn make_resolver() -> TokioAsyncResolver {
     let (config, mut options) = trust_dns_resolver::system_conf::read_system_conf().unwrap();
     options.ip_strategy = trust_dns_resolver::config::LookupIpStrategy::Ipv4AndIpv6;
-    TokioAsyncResolver::tokio(config, options).unwrap()
+    TokioAsyncResolver::tokio(config, options)
 }
 
 fn make_https_client() -> Client {
