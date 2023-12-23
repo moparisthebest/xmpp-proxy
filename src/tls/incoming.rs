@@ -11,11 +11,11 @@ use crate::{
     stanzafilter::{StanzaFilter, StanzaReader},
 };
 use anyhow::{bail, Result};
-use log::{error, info, trace};
+use log::{error, info, trace, warn};
 use rustls::{ServerConfig, ServerConnection};
 use std::{net::SocketAddr, sync::Arc};
 use tokio::{
-    io::{AsyncWriteExt, BufStream},
+    io::{AsyncReadExt, AsyncWriteExt, BufStream},
     task::JoinHandle,
 };
 use tokio_rustls::TlsAcceptor;
@@ -111,7 +111,15 @@ pub async fn handle_tls_connection<S: AsyncReadWritePeekSplit>(mut stream: S, cl
         if !proceed_sent {
             bail!("stream ended before open");
         }
-        <S as Split>::combine(in_rd.0, in_wr)?
+        let mut stream = <S as Split>::combine(in_rd.0, in_wr)?;
+        // though https://datatracker.ietf.org/doc/html/rfc6120#section-5.3.3 says that no data, not even whitespace, should be sent after <starttls...
+        // some software in the wild actually does send extra stuff, and currently prosody and ejabberd handle this... so we'll read and discard bytes
+        // until we get to the first byte of the TLS handshake...
+        while stream.first_bytes_match(&mut in_filter.buf[0..1], |p| p[0] != 0x16).await? {
+            warn!("{} buggy software connecting, sent byte after <starttls: {}", client_addr.log_to(), &in_filter.buf[0]);
+            stream.read(&mut in_filter.buf[0..1]).await?;
+        }
+        stream
     } else {
         stream
     };
