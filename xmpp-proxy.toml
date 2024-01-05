@@ -1,8 +1,8 @@
 
 # interfaces to listen for reverse proxy STARTTLS/Direct TLS/TLS WebSocket (wss) XMPP connections on, should be open to the internet
-incoming_listen = [ "0.0.0.0:5222", "0.0.0.0:5269", "0.0.0.0:443" ]
+incoming_listen = [ "[::]:5222", "[::]:5269", "[::]:443" ]
 # interfaces to listen for reverse proxy QUIC/WebTransport XMPP connections on, should be open to the internet
-quic_listen = [ "0.0.0.0:443" ]
+quic_listen = [ "[::]:443" ]
 # interfaces to listen for outgoing proxy TCP or WebSocket XMPP connections on, should be localhost or a path for a unix socket
 outgoing_listen = [ "127.0.0.1:15270" ]
 

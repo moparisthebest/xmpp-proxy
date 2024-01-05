@@ -40,7 +40,7 @@ fn internal_spawn_quic_listener(incoming: Endpoint, local_addr: SocketAddr, conf
 
                     #[cfg(any(feature = "s2s-incoming", feature = "webtransport"))]
                     let server_certs = {
-                        let server_certs = ServerCerts::quic(&new_conn);
+                        let server_certs = ServerCerts::from(&new_conn);
                         #[cfg(feature = "webtransport")]
                         if server_certs.alpn().map(|a| a == webtransport_quinn::ALPN).unwrap_or(false) {
                             return crate::webtransport::incoming::handle_webtransport_session(new_conn, config, server_certs, local_addr, client_addr).await;

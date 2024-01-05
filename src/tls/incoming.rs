@@ -12,7 +12,7 @@ use crate::{
 };
 use anyhow::{bail, Result};
 use log::{error, info, trace, warn};
-use rustls::{ServerConfig, ServerConnection};
+use rustls::ServerConfig;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufStream},
@@ -117,7 +117,7 @@ pub async fn handle_tls_connection<S: AsyncReadWritePeekSplit>(mut stream: S, cl
         // until we get to the first byte of the TLS handshake...
         while stream.first_bytes_match(&mut in_filter.buf[0..1], |p| p[0] != 0x16).await? {
             warn!("{} buggy software connecting, sent byte after <starttls: {}", client_addr.log_to(), &in_filter.buf[0]);
-            stream.read(&mut in_filter.buf[0..1]).await?;
+            stream.read_exact(&mut in_filter.buf[0..1]).await?;
         }
         stream
     } else {
@@ -127,19 +127,9 @@ pub async fn handle_tls_connection<S: AsyncReadWritePeekSplit>(mut stream: S, cl
     let stream = acceptor.accept(stream).await?;
     let (_, server_connection) = stream.get_ref();
 
-    // todo: find better way to do this, might require different tokio_rustls API, the problem is I can't hold this
-    // past stream.into() below, and I can't get it back out after, now I *could* read sni+alpn+peer_certs
-    // *here* instead and pass them on, but since I haven't read anything from the stream yet, I'm
-    // not guaranteed that the handshake is complete and these are available, yes I can call is_handshaking()
-    // but there is no async API to complete the handshake, so I really need to pass it down to under
-    // where we read the first stanza, where we are guaranteed the handshake is complete, but I can't
-    // do that without ignoring the lifetime and just pulling a C programmer and pinky promising to be
-    // *very careful* that this reference doesn't outlive stream...
     #[cfg(any(feature = "s2s-incoming", feature = "webtransport"))]
-    let server_certs = {
-        let server_connection: &'static ServerConnection = unsafe { std::mem::transmute(server_connection) };
-        ServerCerts::Tls(server_connection)
-    };
+    let server_certs = ServerCerts::from(server_connection);
+
     #[cfg(not(any(feature = "s2s-incoming", feature = "webtransport")))]
     let server_certs = ();
 

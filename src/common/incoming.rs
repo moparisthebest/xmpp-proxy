@@ -44,55 +44,63 @@ pub type ServerCerts = ();
 
 #[cfg(any(feature = "s2s-incoming", feature = "webtransport"))]
 #[derive(Clone)]
-pub enum ServerCerts {
-    Tls(&'static ServerConnection),
-    #[cfg(feature = "quic")]
-    Quic(Option<Vec<Certificate>>, Option<String>, Option<Vec<u8>>), // todo: wrap this in arc or something now
+pub struct ServerCerts {
+    inner: Arc<InnerServerCerts>,
+    is_tls: bool,
 }
 
 #[cfg(any(feature = "s2s-incoming", feature = "webtransport"))]
-impl ServerCerts {
-    #[cfg(feature = "quic")]
-    pub fn quic(conn: &quinn::Connection) -> ServerCerts {
-        let certs = conn.peer_identity().and_then(|v| v.downcast::<Vec<Certificate>>().ok()).map(|v| v.to_vec());
+struct InnerServerCerts {
+    peer_certificates: Option<Vec<Certificate>>,
+    sni: Option<String>,
+    alpn: Option<Vec<u8>>,
+}
+
+#[cfg(any(feature = "s2s-incoming", feature = "webtransport"))]
+impl From<&ServerConnection> for ServerCerts {
+    fn from(conn: &ServerConnection) -> Self {
+        let peer_certificates = conn.peer_certificates().map(|c| c.to_vec());
+        let sni = conn.server_name().map(|s| s.to_string());
+        let alpn = conn.alpn_protocol().map(|s| s.to_vec());
+        Self {
+            inner: InnerServerCerts { peer_certificates, sni, alpn }.into(),
+            is_tls: true,
+        }
+    }
+}
+
+#[cfg(all(feature = "quic", any(feature = "s2s-incoming", feature = "webtransport")))]
+impl From<&quinn::Connection> for ServerCerts {
+    fn from(conn: &quinn::Connection) -> Self {
+        let peer_certificates = conn.peer_identity().and_then(|v| v.downcast::<Vec<Certificate>>().ok()).map(|v| v.to_vec());
         let (sni, alpn) = conn
             .handshake_data()
             .and_then(|v| v.downcast::<quinn::crypto::rustls::HandshakeData>().ok())
             .map(|h| (h.server_name, h.protocol))
             .unwrap_or_default();
-        ServerCerts::Quic(certs, sni, alpn)
-    }
-
-    pub fn peer_certificates(&self) -> Option<Vec<Certificate>> {
-        match self {
-            ServerCerts::Tls(c) => c.peer_certificates().map(|c| c.to_vec()),
-            #[cfg(feature = "quic")]
-            ServerCerts::Quic(certs, _, _) => certs.clone(),
+        Self {
+            inner: InnerServerCerts { peer_certificates, sni, alpn }.into(),
+            is_tls: false,
         }
     }
+}
 
-    pub fn sni(&self) -> Option<String> {
-        match self {
-            ServerCerts::Tls(c) => c.server_name().map(|s| s.to_string()),
-            #[cfg(feature = "quic")]
-            ServerCerts::Quic(_, sni, _) => sni.clone(),
-        }
+#[cfg(any(feature = "s2s-incoming", feature = "webtransport"))]
+impl ServerCerts {
+    pub fn peer_certificates(&self) -> Option<&Vec<Certificate>> {
+        self.inner.peer_certificates.as_ref()
     }
 
-    pub fn alpn(&self) -> Option<Vec<u8>> {
-        match self {
-            ServerCerts::Tls(c) => c.alpn_protocol().map(|s| s.to_vec()),
-            #[cfg(feature = "quic")]
-            ServerCerts::Quic(_, _, alpn) => alpn.clone(),
-        }
+    pub fn sni(&self) -> Option<&str> {
+        self.inner.sni.as_deref()
+    }
+
+    pub fn alpn(&self) -> Option<&Vec<u8>> {
+        self.inner.alpn.as_ref()
     }
 
     pub fn is_tls(&self) -> bool {
-        match self {
-            ServerCerts::Tls(_) => true,
-            #[cfg(feature = "quic")]
-            ServerCerts::Quic(_, _, _) => false,
-        }
+        self.is_tls
     }
 }
 
@@ -120,7 +128,7 @@ pub async fn shuffle_rd_wr_filter(
             "{} connected: sni: {:?}, alpn: {:?}, tls-not-quic: {}",
             client_addr.log_from(),
             server_certs.sni(),
-            server_certs.alpn().map(|a| String::from_utf8_lossy(&a).to_string()),
+            server_certs.alpn().map(|a| String::from_utf8_lossy(a).to_string()),
             server_certs.is_tls(),
         );
 

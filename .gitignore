@@ -8,3 +8,4 @@
 fuzz/target/
 *.txt
 conflict/
+*.test.toml
