@@ -41,6 +41,7 @@ pub mod ca_roots;
 pub mod certs_key;
 pub mod stream_listener;
 
+pub const DEFAULT_MAX_STANZA_SIZE_BYTES: usize = 262_144;
 pub const IN_BUFFER_SIZE: usize = 8192;
 pub const ALPN_XMPP_CLIENT: &[u8] = b"xmpp-client";
 pub const ALPN_XMPP_SERVER: &[u8] = b"xmpp-server";

@@ -26,5 +26,8 @@ pub mod verify;
 #[cfg(all(feature = "nix", not(target_os = "windows")))]
 pub mod systemd;
 
+#[cfg(feature = "tokio-xmpp")]
+pub mod tokio_xmpp;
+
 pub mod context;
 pub mod in_out;

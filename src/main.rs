@@ -5,7 +5,7 @@ use log::{debug, info};
 use serde_derive::Deserialize;
 use std::{ffi::OsString, fs::File, io::Read, iter::Iterator, path::Path, sync::Arc};
 use tokio::{net::TcpListener, task::JoinHandle};
-use xmpp_proxy::common::{certs_key::CertsKey, Listener, SocketAddrPath, UdpListener};
+use xmpp_proxy::common::{certs_key::CertsKey, Listener, SocketAddrPath, UdpListener, DEFAULT_MAX_STANZA_SIZE_BYTES};
 
 #[cfg(not(target_os = "windows"))]
 use tokio::net::UnixListener;
@@ -36,7 +36,7 @@ struct Config {
 }
 
 fn default_max_stanza_size_bytes() -> usize {
-    262_144
+    DEFAULT_MAX_STANZA_SIZE_BYTES
 }
 
 impl Config {

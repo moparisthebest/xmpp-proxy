@@ -5,7 +5,7 @@ use anyhow::{bail, Result};
 
 use StanzaState::*;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum StanzaState {
     OutsideStanza,
     StanzaFirstChar,
@@ -20,6 +20,7 @@ enum StanzaState {
     EndStream,
 }
 
+#[derive(Clone)]
 pub struct StanzaFilter {
     buf_size: usize,
     pub buf: Vec<u8>,
@@ -214,7 +215,7 @@ impl<T: tokio::io::AsyncRead + Unpin> StanzaReader<T> {
         }
     }
 
-    pub async fn next_eoft<'a>(&'a mut self, filter: &'a mut StanzaFilter) -> Result<Option<(&'a [u8], usize)>> {
+    pub async fn next_eoft<'a>(&mut self, filter: &'a mut StanzaFilter) -> Result<Option<(&'a [u8], usize)>> {
         use tokio::io::AsyncReadExt;
 
         loop {

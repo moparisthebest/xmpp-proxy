@@ -74,8 +74,12 @@ webtransport-quinn = { version = "0.6", optional = true }
 # systemd dep
 nix = { version = "0.27", optional = true, default-features = false, features = ["socket"]}
 
+# tokio-xmpp if you want a ServerConnector impl
+tokio-xmpp = { version = "4.0", optional = true, default-features = false }
+tokio-util = { version = "0.7", optional = true, features = ["codec"] }
+
 [features]
-default = ["c2s-incoming", "c2s-outgoing", "s2s-incoming", "s2s-outgoing", "tls", "quic", "websocket", "webtransport", "logging", "tls-ca-roots-native", "systemd"]
+default = ["c2s-incoming", "c2s-outgoing", "s2s-incoming", "s2s-outgoing", "tls", "quic", "websocket", "webtransport", "logging", "tls-ca-roots-native", "systemd", "tokio-xmpp"]
 
 # you must pick one of these or the other, not both: todo: enable picking both and choosing at runtime
 # don't need either of these if only doing c2s-incoming
@@ -104,6 +108,8 @@ webtransport = ["webtransport-quinn", "quic"] # webtransport requires quic
 
 logging = ["rand", "env_logger"]
 systemd = ["nix"]
+
+tokio-xmpp = ["dep:tokio-xmpp", "dep:tokio-util", "outgoing"]
 
 # enables unit tests that need network and therefore may be flaky
 net-test = []
