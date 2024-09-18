@@ -139,8 +139,7 @@ pub struct StanzaStream {
     wr: StanzaWrite,
     rd: StanzaRead,
 
-    fut_next_stanza: Option<u64>,
-
+    fut_next_stanza: Option<Pin<Box<dyn Future<Output = Result<Option<(&'static [u8], usize)>>> + Send>>>,
     send_stream_open: bool,
     stream_open: Vec<u8>,
 
@@ -192,6 +191,10 @@ impl StanzaStream {
             wr_filter,
             fut_next_stanza: None,
         }
+    }
+
+    pub async fn next_stanza_vec(&mut self) -> Result<Option<(Vec<u8>, usize)>> {
+        self.next_stanza().await.map(|o| o.map(|(v, u)| (v.to_vec(), u)))
     }
 
     pub async fn next_stanza<'a>(&'a mut self) -> Result<Option<(&'a [u8], usize)>> {
@@ -246,10 +249,16 @@ impl AsyncRead for StanzaStream {
     fn poll_read(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>, buf: &mut tokio::io::ReadBuf<'_>) -> std::task::Poll<std::io::Result<()>> {
         // todo: instead of waiting for a whole stanza, if self is AsyncRead, we could go directly to that and skip stanzafilter, problem is this would break Stream::poll_next and XmppStream::next_stanza, so maybe we need a different struct to do that?
         // todo: instead of using our StanzaFilter and copying bytes from it, we could make one out of the buf?
-        let future = self.next_stanza();
-        // self.fut_next_stanza = Some(future);
-        let future = std::pin::pin!(future);
-        match future.poll(cx) {
+        let mut future = match self.fut_next_stanza.take() {
+            Some(fut) => fut,
+            None => {
+                let this: &'static mut std::pin::Pin<&mut Self> = unsafe { std::mem::transmute(&mut self) };
+                let future = this.next_stanza();
+                Box::pin(future)
+            }
+        };
+
+        match future.as_mut().poll(cx) {
             std::task::Poll::Ready(res) => {
                 if let Some((stanza, _)) = res.map_err(|e| IoError::other(e))? {
                     if stanza.len() >= buf.remaining() {
@@ -260,7 +269,7 @@ impl AsyncRead for StanzaStream {
                 return Poll::Ready(Ok(()));
             }
             std::task::Poll::Pending => {
-                // self.fut_next_stanza = Some(future);
+                self.fut_next_stanza = Some(future);
                 std::task::Poll::Pending
             }
         }
