@@ -245,22 +245,50 @@ impl Stream for StanzaStream {
     }
 }
 
+type ResFut<T> = Pin<Box<dyn Future<Output = Result<T, IoError>>>>;
+enum Hold<T> {
+    Idle(T),
+    PinBox(Pin<Box<T>>),
+}
+
+impl<T: Unpin> Hold<T> {
+    fn into(self) -> T {
+        match self {
+            Hold::Idle(t) => t,
+            Hold::PinBox(pin) => *Pin::into_inner(pin),
+        }
+    }
+
+    fn idle(self) -> Hold<T> {
+        Hold::Idle(self.into())
+    }
+}
+
 pub struct AsyncReadWriteWs {
     state: Option<AsyncReadWriteWsState>,
 }
 
+type PinSS = Hold<StanzaStream>;
+
+type ResFutBuf = ResFut<Option<&'static [u8]>>;
+type ResFutUsize = ResFut<usize>;
+type ResFutUnit = ResFut<()>;
+
 enum AsyncReadWriteWsState {
-    Stream(StanzaStream),
-    Fut(Pin<Box<StanzaStream>>, Pin<Box<dyn Future<Output = Result<Option<&'static [u8]>, IoError>>>>),
+    Idle(Hold<StanzaStream>),
+    Read(PinSS, ResFutBuf),
+    Write(PinSS, ResFutUsize),
+    Flush(PinSS, ResFutUnit),
+    Shutdown(PinSS, ResFutUnit),
 }
 
-impl AsyncRead for AsyncReadWriteWs {
-    fn poll_read(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>, buf: &mut tokio::io::ReadBuf<'_>) -> std::task::Poll<std::io::Result<()>> {
-        // todo: instead of waiting for a whole stanza, if self is AsyncRead, we could go directly to that and skip stanzafilter, problem is this would break Stream::poll_next and XmppStream::next_stanza, so maybe we need a different struct to do that?
-        // todo: instead of using our StanzaFilter and copying bytes from it, we could make one out of the buf?
-        let (stream, mut future): (Pin<Box<StanzaStream>>, Pin<Box<dyn Future<Output = Result<Option<&'static [u8]>, IoError>>>>) = match self.state.take().unwrap() {
-            AsyncReadWriteWsState::Stream(stream) => {
-                let mut stream: Pin<Box<StanzaStream>> = Box::pin(stream);
+impl Stream for AsyncReadWriteWs {
+    type Item = Result<Vec<u8>, IoError>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+        let (stream, mut future): (PinSS, ResFutBuf) = match self.state.take().unwrap() {
+            AsyncReadWriteWsState::Idle(stream) | AsyncReadWriteWsState::Write(stream, _) | AsyncReadWriteWsState::Flush(stream, _) | AsyncReadWriteWsState::Shutdown(stream, _) => {
+                let mut stream = Box::pin(stream.into());
                 let stream_mut: &'static mut StanzaStream = unsafe { std::mem::transmute(&mut stream) };
                 let fut = async move {
                     let res = stream_mut.next_stanza().await;
@@ -274,16 +302,53 @@ impl AsyncRead for AsyncReadWriteWs {
                         Err(e) => Err(e),
                     }
                 };
-                // todo!()
-                (stream, Box::pin(fut))
+                (Hold::PinBox(stream), Box::pin(fut))
             }
-            AsyncReadWriteWsState::Fut(stream, fut) => (stream, fut),
+            AsyncReadWriteWsState::Read(stream, fut) => (stream, fut),
         };
 
         match future.as_mut().poll(cx) {
             std::task::Poll::Ready(res) => {
-                let stream = Pin::into_inner(stream);
-                self.state = AsyncReadWriteWsState::Stream(*stream).into();
+                self.state = AsyncReadWriteWsState::Idle(stream.idle()).into();
+                let stanza = res.transpose().map(|o| o.map(|b| b.to_vec()));
+                Poll::Ready(stanza)
+            }
+            std::task::Poll::Pending => {
+                self.state = Some(AsyncReadWriteWsState::Read(stream, future));
+                std::task::Poll::Pending
+            }
+        }
+    }
+}
+
+impl AsyncRead for AsyncReadWriteWs {
+    fn poll_read(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>, buf: &mut tokio::io::ReadBuf<'_>) -> std::task::Poll<std::io::Result<()>> {
+        // todo: instead of waiting for a whole stanza, if self is AsyncRead, we could go directly to that and skip stanzafilter, problem is this would break Stream::poll_next and XmppStream::next_stanza, so maybe we need a different struct to do that?
+        // todo: instead of using our StanzaFilter and copying bytes from it, we could make one out of the buf?
+        let (stream, mut future): (PinSS, ResFutBuf) = match self.state.take().unwrap() {
+            AsyncReadWriteWsState::Idle(stream) | AsyncReadWriteWsState::Write(stream, _) | AsyncReadWriteWsState::Flush(stream, _) | AsyncReadWriteWsState::Shutdown(stream, _) => {
+                let mut stream = Box::pin(stream.into());
+                let stream_mut: &'static mut StanzaStream = unsafe { std::mem::transmute(&mut stream) };
+                let fut = async move {
+                    let res = stream_mut.next_stanza().await;
+                    match res.map_err(IoError::other) {
+                        Ok(Some((stanza, _))) => {
+                            // this is a reference to stream which we return with it, and it's not returned from there either, so this is safe or needs pin or ?
+                            let stanza: &'static [u8] = unsafe { std::mem::transmute(stanza) };
+                            Ok(Some(stanza))
+                        }
+                        Ok(None) => Ok(None),
+                        Err(e) => Err(e),
+                    }
+                };
+                (Hold::PinBox(stream), Box::pin(fut))
+            }
+            AsyncReadWriteWsState::Read(stream, fut) => (stream, fut),
+        };
+
+        match future.as_mut().poll(cx) {
+            std::task::Poll::Ready(res) => {
+                self.state = AsyncReadWriteWsState::Idle(stream.idle()).into();
                 if let Some(stanza) = res.map_err(IoError::other)? {
                     if stanza.len() >= buf.remaining() {
                         return std::task::Poll::Ready(Err(IoError::other(format!("stanza of length {} read but buffer of only {} supplied", stanza.len(), buf.remaining()))));
@@ -293,7 +358,83 @@ impl AsyncRead for AsyncReadWriteWs {
                 Poll::Ready(Ok(()))
             }
             std::task::Poll::Pending => {
-                self.state = Some(AsyncReadWriteWsState::Fut(stream, future));
+                self.state = Some(AsyncReadWriteWsState::Read(stream, future));
+                std::task::Poll::Pending
+            }
+        }
+    }
+}
+
+impl AsyncWrite for AsyncReadWriteWs {
+    fn poll_write(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>, buf: &[u8]) -> Poll<std::result::Result<usize, std::io::Error>> {
+        // can't save the future because buf would need borrowed for static...
+        // todo: do I copy them to a vec I own first or what ?
+        let mut stream = match self.state.take().unwrap() {
+            AsyncReadWriteWsState::Idle(stream)
+            | AsyncReadWriteWsState::Read(stream, _)
+            | AsyncReadWriteWsState::Write(stream, _)
+            | AsyncReadWriteWsState::Shutdown(stream, _)
+            | AsyncReadWriteWsState::Flush(stream, _) => stream.into(),
+        };
+        let future = stream.write_stanzas(buf);
+        let future = async move { future.await.map_err(IoError::other) };
+        let mut future = Box::pin(future);
+        let ret = match future.as_mut().poll(cx) {
+            Poll::Ready(r) => r.into(),
+            Poll::Pending => Poll::Pending,
+        };
+        drop(future);
+        self.state = AsyncReadWriteWsState::Idle(Hold::Idle(stream)).into();
+        ret
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<std::result::Result<(), std::io::Error>> {
+        let (stream, mut future): (PinSS, ResFutUnit) = match self.state.take().unwrap() {
+            AsyncReadWriteWsState::Idle(stream) | AsyncReadWriteWsState::Read(stream, _) | AsyncReadWriteWsState::Write(stream, _) | AsyncReadWriteWsState::Shutdown(stream, _) => {
+                let mut stream = Box::pin(stream.into());
+                let stream_mut: &'static mut StanzaStream = unsafe { std::mem::transmute(&mut stream) };
+                let fut = async move {
+                    let res = stream_mut.flush().await;
+                    res.map_err(IoError::other)
+                };
+                (Hold::PinBox(stream), Box::pin(fut))
+            }
+            AsyncReadWriteWsState::Flush(stream, fut) => (stream, fut),
+        };
+
+        match future.as_mut().poll(cx) {
+            std::task::Poll::Ready(res) => {
+                self.state = AsyncReadWriteWsState::Idle(stream.idle()).into();
+                Poll::Ready(res)
+            }
+            std::task::Poll::Pending => {
+                self.state = Some(AsyncReadWriteWsState::Flush(stream, future));
+                std::task::Poll::Pending
+            }
+        }
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<std::result::Result<(), std::io::Error>> {
+        let (stream, mut future): (PinSS, ResFutUnit) = match self.state.take().unwrap() {
+            AsyncReadWriteWsState::Idle(stream) | AsyncReadWriteWsState::Read(stream, _) | AsyncReadWriteWsState::Write(stream, _) | AsyncReadWriteWsState::Flush(stream, _) => {
+                let mut stream = Box::pin(stream.into());
+                let stream_mut: &'static mut StanzaStream = unsafe { std::mem::transmute(&mut stream) };
+                let fut = async move {
+                    let res = stream_mut.shutdown().await;
+                    res.map_err(IoError::other)
+                };
+                (Hold::PinBox(stream), Box::pin(fut))
+            }
+            AsyncReadWriteWsState::Shutdown(stream, fut) => (stream, fut),
+        };
+
+        match future.as_mut().poll(cx) {
+            std::task::Poll::Ready(res) => {
+                self.state = AsyncReadWriteWsState::Idle(stream.idle()).into();
+                Poll::Ready(res)
+            }
+            std::task::Poll::Pending => {
+                self.state = Some(AsyncReadWriteWsState::Shutdown(stream, future));
                 std::task::Poll::Pending
             }
         }
@@ -394,7 +535,7 @@ mod test {
             if n == 0 {
                 break;
             }
-            wr.write(&buf[0..n]).await?;
+            wr.write_all(&buf[0..n]).await?;
         }
         // match stream.wr {
         //     StanzaWrite::AsyncWrite(a) => {
