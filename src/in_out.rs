@@ -233,7 +233,7 @@ impl Stream for StanzaStream {
         if self.send_stream_open {
             self.send_stream_open = false;
             // swap in an empty vec and send ours
-            let stream_open = std::mem::replace(&mut self.stream_open, Vec::new());
+            let stream_open = std::mem::take(&mut self.stream_open);
             return std::task::Poll::Ready(Some(Ok((stream_open, 0))));
         }
         let future = self.next_stanza();
@@ -251,36 +251,40 @@ pub struct AsyncReadWriteWs {
 
 enum AsyncReadWriteWsState {
     Stream(StanzaStream),
-    Fut(Pin<Box<dyn Future<Output = (Result<Option<&'static [u8]>, IoError>, StanzaStream)>>>),
+    Fut(Pin<Box<StanzaStream>>, Pin<Box<dyn Future<Output = Result<Option<&'static [u8]>, IoError>>>>),
 }
 
 impl AsyncRead for AsyncReadWriteWs {
     fn poll_read(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>, buf: &mut tokio::io::ReadBuf<'_>) -> std::task::Poll<std::io::Result<()>> {
         // todo: instead of waiting for a whole stanza, if self is AsyncRead, we could go directly to that and skip stanzafilter, problem is this would break Stream::poll_next and XmppStream::next_stanza, so maybe we need a different struct to do that?
         // todo: instead of using our StanzaFilter and copying bytes from it, we could make one out of the buf?
-        let mut future = match self.state.take().unwrap() {
-            AsyncReadWriteWsState::Stream(mut stream) => {
+        let (stream, mut future): (Pin<Box<StanzaStream>>, Pin<Box<dyn Future<Output = Result<Option<&'static [u8]>, IoError>>>>) = match self.state.take().unwrap() {
+            AsyncReadWriteWsState::Stream(stream) => {
+                let mut stream: Pin<Box<StanzaStream>> = Box::pin(stream);
+                let stream_mut: &'static mut StanzaStream = unsafe { std::mem::transmute(&mut stream) };
                 let fut = async move {
-                    let res = stream.next_stanza().await;
-                    match res.map_err(|e| IoError::other(e)) {
+                    let res = stream_mut.next_stanza().await;
+                    match res.map_err(IoError::other) {
                         Ok(Some((stanza, _))) => {
                             // this is a reference to stream which we return with it, and it's not returned from there either, so this is safe or needs pin or ?
                             let stanza: &'static [u8] = unsafe { std::mem::transmute(stanza) };
-                            (Ok(Some(stanza)), stream)
+                            Ok(Some(stanza))
                         }
-                        Ok(None) => (Ok(None), stream),
-                        Err(e) => (Err(e), stream),
+                        Ok(None) => Ok(None),
+                        Err(e) => Err(e),
                     }
                 };
-                Box::pin(fut)
+                // todo!()
+                (stream, Box::pin(fut))
             }
-            AsyncReadWriteWsState::Fut(fut) => fut,
+            AsyncReadWriteWsState::Fut(stream, fut) => (stream, fut),
         };
 
         match future.as_mut().poll(cx) {
-            std::task::Poll::Ready((res, stream)) => {
-                self.state = AsyncReadWriteWsState::Stream(stream).into();
-                if let Some(stanza) = res.map_err(|e| IoError::other(e))? {
+            std::task::Poll::Ready(res) => {
+                let stream = Pin::into_inner(stream);
+                self.state = AsyncReadWriteWsState::Stream(*stream).into();
+                if let Some(stanza) = res.map_err(IoError::other)? {
                     if stanza.len() >= buf.remaining() {
                         return std::task::Poll::Ready(Err(IoError::other(format!("stanza of length {} read but buffer of only {} supplied", stanza.len(), buf.remaining()))));
                     }
@@ -289,7 +293,7 @@ impl AsyncRead for AsyncReadWriteWs {
                 Poll::Ready(Ok(()))
             }
             std::task::Poll::Pending => {
-                self.state = Some(AsyncReadWriteWsState::Fut(future));
+                self.state = Some(AsyncReadWriteWsState::Fut(stream, future));
                 std::task::Poll::Pending
             }
         }
@@ -311,13 +315,13 @@ impl AsyncRead for StanzaStream {
 
         match future.as_mut().poll(cx) {
             std::task::Poll::Ready(res) => {
-                if let Some((stanza, _)) = res.map_err(|e| IoError::other(e))? {
+                if let Some((stanza, _)) = res.map_err(IoError::other)? {
                     if stanza.len() >= buf.remaining() {
                         return std::task::Poll::Ready(Err(IoError::other(format!("stanza of length {} read but buffer of only {} supplied", stanza.len(), buf.remaining()))));
                     }
                     buf.put_slice(stanza);
                 }
-                return Poll::Ready(Ok(()));
+                Poll::Ready(Ok(()))
             }
             std::task::Poll::Pending => {
                 self.fut_next_stanza = Some(future);
@@ -332,7 +336,7 @@ impl AsyncWrite for StanzaStream {
         let future = self.write_stanzas(buf);
         let future = std::pin::pin!(future);
         match future.poll(cx) {
-            Poll::Ready(r) => r.map_err(|e| IoError::other(e)).into(),
+            Poll::Ready(r) => r.map_err(IoError::other).into(),
             Poll::Pending => Poll::Pending,
         }
     }
@@ -341,7 +345,7 @@ impl AsyncWrite for StanzaStream {
         let future = self.wr.flush();
         let future = std::pin::pin!(future);
         match future.poll(cx) {
-            Poll::Ready(r) => r.map_err(|e| IoError::other(e)).into(),
+            Poll::Ready(r) => r.map_err(IoError::other).into(),
             Poll::Pending => Poll::Pending,
         }
     }
@@ -350,7 +354,7 @@ impl AsyncWrite for StanzaStream {
         let future = self.wr.shutdown();
         let future = std::pin::pin!(future);
         match future.poll(cx) {
-            Poll::Ready(r) => r.map_err(|e| IoError::other(e)).into(),
+            Poll::Ready(r) => r.map_err(IoError::other).into(),
             Poll::Pending => Poll::Pending,
         }
     }
@@ -359,10 +363,7 @@ impl AsyncWrite for StanzaStream {
 #[cfg(test)]
 mod test {
     use anyhow::Result;
-    use std::{
-        any::{Any, TypeId},
-        io::Cursor,
-    };
+    use std::io::Cursor;
     use tokio::io::AsyncReadExt;
 
     use crate::{common::to_str, stanzafilter::StanzaFilter};
@@ -374,7 +375,7 @@ mod test {
         let stream_open = br###"
             <stream:stream xmlns='jabber:server' xmlns:stream='http://etherx.jabber.org/streams' xmlns:db='jabber:server:dialback' version='1.0' to='example.org' from='example.com' xml:lang='en'>"###;
         let orig = br###"<a/><b>woo</b>"###;
-        let rd = Cursor::new(orig.clone());
+        let rd = Cursor::new(*orig);
         // let wr = Cursor::new(&mut written[..]);
         let mut wr = Cursor::new(Vec::new());
 

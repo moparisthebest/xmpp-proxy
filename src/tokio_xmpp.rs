@@ -5,7 +5,7 @@ use tokio_util::codec::Framed;
 pub use tokio_xmpp::*;
 use xmpp_stream::XMPPStream;
 
-use crate::{common::certs_key::CertsKey, context::Context, in_out::StanzaStream, srv::srv_connect, stanzafilter::StanzaFilter};
+use crate::in_out::StanzaStream;
 
 #[derive(Clone, Debug)]
 pub struct XmppProxyServerConnectorError(Arc<anyhow::Error>);
