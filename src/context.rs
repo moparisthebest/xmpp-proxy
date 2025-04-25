@@ -23,8 +23,8 @@ impl Context<'_> {
         let (log_to, log_from, conn_id) = if log_enabled!(log::Level::Info) {
             #[cfg(feature = "logging")]
             let conn_id = {
-                use rand::{distributions::Alphanumeric, thread_rng, Rng};
-                thread_rng().sample_iter(&Alphanumeric).take(10).map(char::from).collect()
+                use rand::{distr::Alphanumeric, rng, Rng};
+                rng().sample_iter(&Alphanumeric).take(10).map(char::from).collect()
             };
             #[cfg(not(feature = "logging"))]
             let conn_id = "".to_string();

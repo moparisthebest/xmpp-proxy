@@ -40,8 +40,8 @@ async-trait = "0.1"
 
 # logging deps
 log = "0.4"
-rand = { version = "0.8", optional = true, features = [] }
-env_logger = { version = "0.10", optional = true, features = [] }
+rand = { version = "0.9", optional = true, features = [] }
+env_logger = { version = "0.11", optional = true, features = [] }
 
 # incoming deps
 tokio-rustls = { version = "0.24", optional = true }
@@ -55,7 +55,7 @@ trust-dns-resolver = { version = "0.23", optional = true }
 webpki-roots = { version = "0.25", optional = true }
 rustls-native-certs = { version = "0.6", optional = true }
 # todo: feed reqwest the roots we already have
-reqwest = { version = "0.11", optional = true, default-features = false, features = ["rustls-tls-native-roots", "json", "gzip", "trust-dns"] }
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["rustls-tls-native-roots", "json", "gzip", "trust-dns"] }
 
 # quic deps
 quinn = { version = "0.10", optional = true }
@@ -72,7 +72,7 @@ futures-util = { version = "0.3", default-features = false, features = ["async-a
 webtransport-quinn = { version = "0.6", optional = true }
 
 # systemd dep
-nix = { version = "0.27", optional = true, default-features = false, features = ["socket"]}
+nix = { version = "0.29", optional = true, default-features = false, features = ["socket"]}
 
 [features]
 default = ["c2s-incoming", "c2s-outgoing", "s2s-incoming", "s2s-outgoing", "tls", "quic", "websocket", "webtransport", "logging", "tls-ca-roots-native", "systemd"]
