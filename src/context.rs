@@ -18,8 +18,8 @@ pub struct Context<'a> {
     client_addr: SocketAddr,
 }
 
-impl<'a> Context<'a> {
-    pub fn new(proto: &'static str, client_addr: SocketAddr) -> Context {
+impl Context<'_> {
+    pub fn new(proto: &'static str, client_addr: SocketAddr) -> Context<'static> {
         let (log_to, log_from, conn_id) = if log_enabled!(log::Level::Info) {
             #[cfg(feature = "logging")]
             let conn_id = {

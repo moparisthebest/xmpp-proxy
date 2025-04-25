@@ -399,6 +399,7 @@ pub async fn shuffle_rd_wr_filter_only(
                     }
                 }
             },
+            else => break,
         }
     }
 

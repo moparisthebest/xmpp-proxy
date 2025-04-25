@@ -332,7 +332,7 @@ fn wt_to_srv(url: &str) -> Option<(XmppConnectionType, u16)> {
         }
     };
 
-    let port = if let Some(port) = url.port() { port } else { 443 };
+    let port = url.port().unwrap_or(443);
 
     Some((XmppConnectionType::WebTransport(url), port))
 }
