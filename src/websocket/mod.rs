@@ -4,7 +4,7 @@ use futures_util::stream::{SplitSink, SplitStream};
 use tokio_tungstenite::{
     tungstenite::{
         handshake::server::{Request, Response},
-        http::header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        http::header::{ACCESS_CONTROL_ALLOW_ORIGIN, SEC_WEBSOCKET_PROTOCOL},
         protocol::WebSocketConfig,
     },
     WebSocketStream,
@@ -22,12 +22,12 @@ pub type WsRd = SplitStream<WebSocketStream<BoxAsyncReadWrite>>;
 // https://datatracker.ietf.org/doc/html/rfc7395
 
 fn ws_cfg(max_stanza_size_bytes: usize) -> Option<WebSocketConfig> {
-    Some(WebSocketConfig {
-        max_frame_size: Some(max_stanza_size_bytes),       // this is exactly the stanza size
-        max_message_size: Some(max_stanza_size_bytes * 4), // this is the message size, default is 4x frame size, so I guess we'll do the same here
-        accept_unmasked_frames: true,
-        ..Default::default()
-    })
+    Some(
+        WebSocketConfig::default()
+            .max_frame_size(Some(max_stanza_size_bytes)) // this is exactly the stanza size
+            .max_message_size(Some(max_stanza_size_bytes * 4)) // this is the message size, default is 4x frame size, so I guess we'll do the same here
+            .accept_unmasked_frames(true),
+    )
 }
 
 pub async fn incoming_websocket_connection(stream: BoxAsyncReadWrite, max_stanza_size_bytes: usize) -> Result<(StanzaRead, StanzaWrite)> {
@@ -36,6 +36,7 @@ pub async fn incoming_websocket_connection(stream: BoxAsyncReadWrite, max_stanza
         stream,
         |_request: &Request, mut response: Response| {
             // todo: check SEC_WEBSOCKET_PROTOCOL or ORIGIN ?
+            response.headers_mut().append(SEC_WEBSOCKET_PROTOCOL, "xmpp".parse().expect("known to be good value"));
             response.headers_mut().append(ACCESS_CONTROL_ALLOW_ORIGIN, "*".parse().expect("known to be good value"));
             Ok(response)
         },
