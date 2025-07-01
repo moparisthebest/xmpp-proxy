@@ -331,21 +331,28 @@ impl<T: AsyncRead + Unpin + Send> Peek for BufReader<T> {
     }
 }
 
+use std::time::Duration;
+
 /// Caution: this will loop forever, call timeout variant `first_bytes_match_buf_timeout`
-async fn first_bytes_match_buf(stream: &mut (dyn AsyncBufRead + Send + Unpin), len: usize, matcher: fn(&[u8]) -> bool) -> Result<bool> {
+async fn first_bytes_match_buf(duration: Duration, stream: &mut (dyn AsyncBufRead + Send + Unpin), len: usize, matcher: fn(&[u8]) -> bool) -> Result<bool> {
     use tokio::io::AsyncBufReadExt;
+    let start = std::time::Instant::now();
     loop {
-        let buf = stream.fill_buf().await?;
+        let buf = tokio::time::timeout(duration, stream.fill_buf()).await??;
         if buf.len() >= len {
             return Ok(matcher(&buf[0..len]));
+        }
+        let elapsed = start.elapsed();
+        if elapsed >= duration {
+            // should never happen since this is 2x as long as timeout wrapping it
+            bail!("first_bytes_match_buf elapsed {:?} wtf????", elapsed);
         }
     }
 }
 
 pub async fn first_bytes_match_buf_timeout(stream: &mut (dyn AsyncBufRead + Send + Unpin), len: usize, matcher: fn(&[u8]) -> bool) -> Result<bool> {
     // wait up to 10 seconds until 3 bytes have been read
-    use std::time::Duration;
-    tokio::time::timeout(Duration::from_secs(10), first_bytes_match_buf(stream, len, matcher)).await?
+    tokio::time::timeout(Duration::from_secs(10), first_bytes_match_buf(Duration::from_secs(20), stream, len, matcher)).await?
 }
 
 pub async fn stream_preamble(in_rd: &mut StanzaRead, in_wr: &mut StanzaWrite, client_addr: &'_ str, in_filter: &mut StanzaFilter) -> Result<(Vec<u8>, bool)> {

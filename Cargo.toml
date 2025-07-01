@@ -33,6 +33,7 @@ futures = "0.3"
 die = "0.2"
 anyhow = "1.0"
 tokio = { version = "1.35", features = ["net", "rt", "rt-multi-thread", "macros", "io-util", "signal", "time"] }
+console-subscriber = { version = "0.4", optional = true }
 ring = "0.17"
 data-encoding = "2.5"
 async-trait = "0.1"
@@ -102,8 +103,10 @@ quic = ["quinn", "rustls"]
 websocket = ["tokio-tungstenite", "futures-util", "tls"] # websocket+incoming also enables incoming TLS support as it's free
 webtransport = ["webtransport-quinn", "quic"] # webtransport requires quic
 
+# optional
 logging = ["rand", "env_logger"]
 systemd = ["nix"]
+console = ["console-subscriber", "tokio/tracing"]
 
 # enables unit tests that need network and therefore may be flaky
 net-test = []

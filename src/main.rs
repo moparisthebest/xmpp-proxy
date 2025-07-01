@@ -114,6 +114,8 @@ fn spawn_refresh_task(certs_key: &'static CertsKey, cfg_path: OsString) -> Optio
 #[tokio::main]
 //#[tokio::main(flavor = "multi_thread", worker_threads = 10)]
 async fn main() {
+    #[cfg(feature = "console")]
+    console_subscriber::init();
     let cfg_path = std::env::args_os().nth(1);
     if cfg_path == Some(OsString::from("-v")) {
         include!(concat!(env!("OUT_DIR"), "/version.rs"));
