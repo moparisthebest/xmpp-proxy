@@ -5,12 +5,12 @@ use crate::{
 };
 use anyhow::{bail, Result};
 use log::{debug, trace};
-use rustls::ServerName;
+use rustls::pki_types::ServerName;
 use std::{convert::TryFrom, net::SocketAddr};
 use tokio::io::AsyncWriteExt;
 
 pub async fn tls_connect(target: SocketAddr, server_name: &str, config: &OutgoingVerifierConfig) -> Result<(StanzaWrite, StanzaRead)> {
-    let dnsname = ServerName::try_from(server_name)?;
+    let dnsname = ServerName::try_from(server_name)?.to_owned();
     let stream = tokio::net::TcpStream::connect(target).await?;
     let stream = config.connector_alpn.connect(dnsname, stream).await?;
     let (rd, wrt) = tokio::io::split(stream);
@@ -18,7 +18,7 @@ pub async fn tls_connect(target: SocketAddr, server_name: &str, config: &Outgoin
 }
 
 pub async fn starttls_connect(target: SocketAddr, server_name: &str, stream_open: &[u8], in_filter: &mut StanzaFilter, config: &OutgoingVerifierConfig) -> Result<(StanzaWrite, StanzaRead)> {
-    let dnsname = ServerName::try_from(server_name)?;
+    let dnsname = ServerName::try_from(server_name)?.to_owned();
     let mut stream = tokio::net::TcpStream::connect(target).await?;
     let (in_rd, mut in_wr) = stream.split();
 

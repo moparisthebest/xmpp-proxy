@@ -6,12 +6,12 @@ members = [
 
 [package]
 name = "xmpp-proxy"
-version = "1.0.0"
+version = "1.1.0"
 authors = ["moparisthebest <admin@moparisthebest.com>"]
 
 description = "XMPP reverse proxy and outgoing proxy"
-repository  = "https://code.moparisthebest.com/moparisthebest/xmpp-proxy"
-keywords    = ["xmpp", "proxy"]
+repository = "https://code.moparisthebest.com/moparisthebest/xmpp-proxy"
+keywords = ["xmpp", "proxy"]
 
 license = "AGPL-3.0-or-later"
 readme = "README.md"
@@ -26,72 +26,69 @@ include = [
 ]
 
 [dependencies]
-toml = "0.8"
-serde_derive = "1.0"
+toml = "0.9"
 serde = { version = "1.0", features = ["derive"] }
 futures = "0.3"
 die = "0.2"
 anyhow = "1.0"
-tokio = { version = "1.35", features = ["net", "rt", "rt-multi-thread", "macros", "io-util", "signal", "time"] }
+tokio = { version = "1.47", features = ["net", "rt", "rt-multi-thread", "macros", "io-util", "signal", "time"] }
 console-subscriber = { version = "0.4", optional = true }
 ring = "0.17"
-data-encoding = "2.5"
+data-encoding = { version = "2.9", optional = true }
 async-trait = "0.1"
-
 
 # logging deps
 log = "0.4"
-rand = { version = "0.8", optional = true, features = [] }
-env_logger = { version = "0.10", optional = true, features = [] }
+rand = { version = "0.9", optional = true, default-features = false, features = ["thread_rng"] }
+env_logger = { version = "0.11", optional = true, default-features = false }
 
 # incoming deps
-tokio-rustls = { version = "0.24", optional = true }
-webpki = { package = "rustls-webpki", version = "0.101", optional = true }
+tokio-rustls = { version = "0.26", optional = true }
+webpki = { package = "rustls-webpki", version = "0.103", optional = true, default-features = false }
 
 # outgoing deps
-lazy_static = "1.4"
-trust-dns-resolver = { version = "0.23", optional = true }
 # todo: feature+code for dns-over-rustls
-#trust-dns-resolver = { version = "0.21", features = ["dns-over-rustls"], optional = true }
-webpki-roots = { version = "0.25", optional = true }
-rustls-native-certs = { version = "0.6", optional = true }
+hickory-resolver = { version = "0.25", optional = true }
+webpki-roots = { version = "1.0", optional = true }
+rustls-native-certs = { version = "0.8", optional = true }
 # todo: feed reqwest the roots we already have
-reqwest = { version = "0.11", optional = true, default-features = false, features = ["rustls-tls-native-roots", "json", "gzip", "trust-dns"] }
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "gzip"] }
 
 # quic deps
-quinn = { version = "0.10", optional = true }
+quinn = { version = "0.11", optional = true, default-features = false, features = ["runtime-tokio"] }
+pin-project-lite = { version = "0.2", optional = true }
 
 # shared deps needed by quic and incoming
-rustls = { version = "0.21", optional = true, features = ["dangerous_configuration"] }
-rustls-pemfile = { version = "1.0", optional = true }
+rustls = { version = "0.23", optional = true, default-features = false }
+rustls-pemfile = { version = "2.2", optional = true, default-features = false, features = ["std"] }
 
 # websocket deps
-tokio-tungstenite = { version = "0.21", optional = true, default-features = false, features = ["handshake"] }
+tokio-tungstenite = { version = "0.27", optional = true, default-features = false, features = ["handshake"] }
 futures-util = { version = "0.3", default-features = false, features = ["async-await", "sink", "std"], optional = true }
 
 # webtransport deps
-webtransport-quinn = { version = "0.6", optional = true }
+web-transport-quinn = { version = "0.7", optional = true, default-features = false }
 
 # systemd dep
-nix = { version = "0.27", optional = true, default-features = false, features = ["socket"]}
+nix = { version = "0.30", optional = true, default-features = false, features = ["socket"] }
 
 [features]
-default = ["c2s-incoming", "c2s-outgoing", "s2s-incoming", "s2s-outgoing", "tls", "quic", "websocket", "webtransport", "logging", "tls-ca-roots-native", "systemd"]
+default = ["c2s-incoming", "c2s-outgoing", "s2s-incoming", "s2s-outgoing", "tls", "quic", "websocket", "webtransport", "logging", "tls-ca-roots-native", "systemd", "tls-ring"]
 
 # you must pick one of these or the other, not both: todo: enable picking both and choosing at runtime
 # don't need either of these if only doing c2s-incoming
-tls-ca-roots-native  = ["rustls-native-certs", "tokio-rustls", "webpki"] # this loads CA certs from your OS
-tls-ca-roots-bundled = ["webpki-roots", "webpki"]                        # this bundles CA certs in the binary
+tls-ca-roots-native = ["rustls-native-certs", "tokio-rustls", "webpki", "reqwest/rustls-tls-native-roots"] # this loads CA certs from your OS
+tls-ca-roots-bundled = ["webpki-roots", "webpki", "reqwest/rustls-tls-webpki-roots"]                       # this bundles CA certs in the binary
 
 # internal use only, ignore
-srv = ["tokio-rustls", "webpki", "trust-dns-resolver", "reqwest"]
+srv = ["tokio-rustls", "webpki", "hickory-resolver", "reqwest", "data-encoding"]
 incoming = ["rustls-pemfile"]
 outgoing = ["srv"]
 c2s = []
 s2s = ["srv", "rustls-pemfile"]
 
 # you must pick one or more of these, you may pick them all
-c2s-incoming = ["incoming", "c2s",]
+c2s-incoming = ["incoming", "c2s"]
 c2s-outgoing = ["outgoing", "c2s"]
 
 s2s-incoming = ["incoming", "s2s"]
@@ -99,9 +96,14 @@ s2s-outgoing = ["outgoing", "s2s"]
 
 # protocols you want to support todo: split out tls vs starttls ?
 tls = ["tokio-rustls", "webpki", "rustls"]
-quic = ["quinn", "rustls"]
+quic = ["quinn", "rustls", "pin-project-lite"]
 websocket = ["tokio-tungstenite", "futures-util", "tls"] # websocket+incoming also enables incoming TLS support as it's free
-webtransport = ["webtransport-quinn", "quic"] # webtransport requires quic
+webtransport = ["web-transport-quinn", "quic"] # webtransport requires quic
+
+# which TLS provider do you want
+tls-aws-lc-rs = ["rustls?/aws-lc-rs", "tokio-rustls?/aws-lc-rs", "quinn?/rustls-aws-lc-rs", "hickory-resolver?/dnssec-aws-lc-rs", "web-transport-quinn?/aws-lc-rs"]
+tls-aws-lc-rs-fips = ["rustls?/fips", "tokio-rustls?/fips", "quinn?/rustls-aws-lc-rs-fips"]
+tls-ring = ["rustls?/ring", "tokio-rustls?/ring", "quinn?/rustls-ring", "hickory-resolver?/dnssec-ring", "web-transport-quinn?/ring"]
 
 # optional
 logging = ["rand", "env_logger"]
@@ -113,8 +115,3 @@ net-test = []
 
 [dev-dependencies]
 serde_json = "1.0"
-
-# need this until a release is made with this commit in it
-[patch.crates-io]
-webtransport-quinn = { git = "https://github.com/kixelated/webtransport-rs", rev = "ba1a372a7a89e4ba9f9bc027733f82f87aa9a4fd" }
-

@@ -3,9 +3,21 @@ use std::sync::{Arc, RwLock};
 use anyhow::Result;
 use rustls::{sign::CertifiedKey, SignatureScheme};
 
+#[cfg_attr(not(feature = "rustls-pemfile"), derive(Debug))]
 pub struct CertsKey {
     #[cfg(feature = "rustls-pemfile")]
     pub inner: Result<RwLock<Arc<CertifiedKey>>>,
+}
+
+#[cfg(feature = "rustls-pemfile")]
+impl std::fmt::Debug for CertsKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.inner.is_ok() {
+            f.write_str("CertsKey(Some)")
+        } else {
+            f.write_str("CertsKey(None)")
+        }
+    }
 }
 
 impl CertsKey {

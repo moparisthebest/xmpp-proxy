@@ -12,39 +12,71 @@ use crate::{
 };
 use anyhow::{bail, Result};
 use data_encoding::BASE64;
+use hickory_resolver::{
+    config::LookupIpStrategy,
+    lookup::{SrvLookup, TxtLookup},
+    lookup_ip::LookupIpIntoIter,
+    IntoName, ResolveError, TokioResolver,
+};
 use log::{debug, error, trace};
-use reqwest::{Client, Url};
+use reqwest::{
+    dns::{Addrs, Name, Resolve, Resolving},
+    Client, Url,
+};
 use ring::digest::{Algorithm, Context as DigestContext, SHA256, SHA512};
+use rustls::pki_types::ServerName;
 use serde::Deserialize;
 use std::{
     cmp::Ordering,
     convert::TryFrom,
     net::{IpAddr, SocketAddr},
-    sync::Arc,
+    sync::{Arc, LazyLock},
+    time::Duration,
 };
 #[cfg(feature = "websocket")]
 use tokio_tungstenite::tungstenite::http::Uri;
-use trust_dns_resolver::{
-    error::ResolveError,
-    lookup::{SrvLookup, TxtLookup},
-    IntoName, TokioAsyncResolver,
-};
-use webpki::{DnsName, DnsNameRef};
 
-lazy_static::lazy_static! {
-    static ref RESOLVER: TokioAsyncResolver = make_resolver();
-    static ref HTTPS_CLIENT: Client = make_https_client();
+static RESOLVER: LazyLock<TokioResolver> = LazyLock::new(make_resolver);
+static HTTPS_CLIENT: LazyLock<Client> = LazyLock::new(make_https_client);
+
+fn make_resolver() -> TokioResolver {
+    let mut builder = TokioResolver::builder_tokio().expect("failed to build TokioResolver");
+    builder.options_mut().ip_strategy = LookupIpStrategy::Ipv4AndIpv6;
+    builder.build()
 }
 
-fn make_resolver() -> TokioAsyncResolver {
-    let (config, mut options) = trust_dns_resolver::system_conf::read_system_conf().unwrap();
-    options.ip_strategy = trust_dns_resolver::config::LookupIpStrategy::Ipv4AndIpv6;
-    TokioAsyncResolver::tokio(config, options)
+struct HickoryDnsResolver;
+
+impl Resolve for HickoryDnsResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        Box::pin(async move {
+            let lookup = RESOLVER.lookup_ip(name.as_str()).await?;
+            let addrs: Addrs = Box::new(SocketAddrs { iter: lookup.into_iter() });
+            Ok(addrs)
+        })
+    }
+}
+
+struct SocketAddrs {
+    iter: LookupIpIntoIter,
+}
+
+impl Iterator for SocketAddrs {
+    type Item = SocketAddr;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next().map(|ip_addr| SocketAddr::new(ip_addr, 0))
+    }
 }
 
 fn make_https_client() -> Client {
-    // todo: configure our root certs here
-    Client::builder().https_only(true).build().expect("failed to make https client?")
+    // todo: configure our root certs here, they want raw Der though which webpki-roots doesn't have...
+    Client::builder()
+        .https_only(true)
+        .timeout(Duration::from_secs(10))
+        .dns_resolver2(HickoryDnsResolver)
+        .build()
+        .expect("failed to make https client?")
 }
 
 async fn https_get<T: reqwest::IntoUrl>(url: T) -> reqwest::Result<reqwest::Response> {
@@ -230,26 +262,28 @@ impl XmppConnection {
                 },
                 #[cfg(feature = "websocket")]
                 // todo: when websocket is found via DNS, we need to validate cert against domain, *not* target, this is a security problem with XEP-0156, we are doing it the secure but likely unexpected way here for now
-                XmppConnectionType::WebSocket(ref url, ref origin) => match crate::websocket::outgoing::websocket_connect(to_addr, domain, url, origin, config).await {
-                    Ok((wr, rd)) => return Ok((wr, rd, to_addr, "websocket-out")),
-                    Err(e) => {
-                        if self.secure && self.target != orig_domain {
-                            // https is a special case, as target is sent in the Host: header, so we have to literally try twice in case this is set for the other on the server
-                            match crate::websocket::outgoing::websocket_connect(to_addr, orig_domain, url, origin, config).await {
-                                Ok((wr, rd)) => return Ok((wr, rd, to_addr, "websocket-out")),
-                                Err(e2) => error!("websocket connection failed to IP {} from TXT {}, error try 1: {}, error try 2: {}", to_addr, url, e, e2),
+                XmppConnectionType::WebSocket(ref url, ref origin) => {
+                    match crate::websocket::outgoing::websocket_connect(to_addr, domain, url, origin, config).await {
+                        Ok((wr, rd)) => return Ok((wr, rd, to_addr, "websocket-out")),
+                        Err(e) => {
+                            if self.secure && self.target != orig_domain {
+                                // https is a special case, as target is sent in the Host: header, so we have to literally try twice in case this is set for the other on the server
+                                match crate::websocket::outgoing::websocket_connect(to_addr, orig_domain, url, origin, config).await {
+                                    Ok((wr, rd)) => return Ok((wr, rd, to_addr, "websocket-out")),
+                                    Err(e2) => error!("websocket connection failed to IP {} from TXT {}, error try 1: {}, error try 2: {}", to_addr, url, e, e2),
+                                }
+                            } else {
+                                error!("websocket connection failed to IP {} from TXT {}, error: {}", to_addr, url, e)
                             }
-                        } else {
-                            error!("websocket connection failed to IP {} from TXT {}, error: {}", to_addr, url, e)
                         }
                     }
-                },
+                }
                 #[cfg(feature = "webtransport")]
-                XmppConnectionType::WebTransport(ref url) => match crate::webtransport::outgoing::webtransport_connect(to_addr, domain, url, config).await {
+                XmppConnectionType::WebTransport(ref url) => match crate::webtransport::outgoing::webtransport_connect(to_addr, domain, url.clone(), config).await {
                     Ok((wr, rd)) => return Ok((wr, rd, to_addr, "webtransport-out")),
                     Err(e) => {
                         if self.secure && self.target != orig_domain {
-                            match crate::webtransport::outgoing::webtransport_connect(to_addr, orig_domain, url, config).await {
+                            match crate::webtransport::outgoing::webtransport_connect(to_addr, orig_domain, url.clone(), config).await {
                                 Ok((wr, rd)) => return Ok((wr, rd, to_addr, "webtransport-out")),
                                 Err(e2) => error!("webtransport connection failed to IP {} from URL {}, error try 1: {}, error try 2: {}", to_addr, url, e, e2),
                             }
@@ -361,7 +395,7 @@ fn collect_txts(ret: &mut Vec<XmppConnection>, txt_records: std::result::Result<
 }
 
 pub async fn get_xmpp_connections(domain: &str, is_c2s: bool) -> Result<(Vec<XmppConnection>, XmppServerCertVerifier)> {
-    let mut valid_tls_cert_server_names: Vec<DnsName> = vec![DnsNameRef::try_from_ascii_str(domain)?.to_owned()];
+    let mut valid_tls_cert_server_names: Vec<ServerName> = vec![ServerName::try_from(domain)?.to_owned()];
     let mut sha256_pinnedpubkeys = Vec::new();
     let (starttls, direct_tls, quic, websocket_txt) = if is_c2s {
         ("_xmpp-client._tcp", "_xmpps-client._tcp", "_xmppq-client._udp", "_xmppconnect")
@@ -417,7 +451,7 @@ pub async fn get_xmpp_connections(domain: &str, is_c2s: bool) -> Result<(Vec<Xmp
 
     for srv in &ret {
         if srv.secure {
-            if let Ok(target) = DnsNameRef::try_from_ascii_str(srv.target.as_str()) {
+            if let Ok(target) = ServerName::try_from(srv.target.as_str()) {
                 let target = target.to_owned();
                 if !valid_tls_cert_server_names.contains(&target) {
                     valid_tls_cert_server_names.push(target);
@@ -803,7 +837,9 @@ async fn collect_posh_service(domain: &str, service_name: &str) -> Result<Posh> 
             PoshJson::PoshRedirect { url, expires } => {
                 let resp = https_get(&url).await?;
                 match resp.json::<PoshJson>().await? {
-                    PoshJson::PoshRedirect { .. } => bail!("posh illegal url redirect to another url"),
+                    PoshJson::PoshRedirect { .. } => {
+                        bail!("posh illegal url redirect to another url")
+                    }
                     PoshJson::PoshFingerprints { fingerprints, expires: expires2 } => Posh::new(
                         fingerprints,
                         // expires is supposed to be the least of these two

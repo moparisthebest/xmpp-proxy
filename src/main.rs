@@ -2,13 +2,13 @@
 use anyhow::Result;
 use die::{die, Die};
 use log::{debug, info};
-use serde_derive::Deserialize;
+use serde::Deserialize;
 use std::{ffi::OsString, fs::File, io::Read, iter::Iterator, path::Path, sync::Arc};
-use tokio::{net::TcpListener, task::JoinHandle};
+use tokio::task::JoinHandle;
 use xmpp_proxy::common::{certs_key::CertsKey, Listener, SocketAddrPath, UdpListener};
 
-#[cfg(not(target_os = "windows"))]
-use tokio::net::UnixListener;
+#[cfg(all(feature = "nix", not(target_os = "windows")))]
+use tokio::net::{TcpListener, UnixListener};
 
 #[cfg(feature = "outgoing")]
 use xmpp_proxy::{common::outgoing::OutgoingConfig, outgoing::spawn_outgoing_listener};
@@ -121,6 +121,7 @@ async fn main() {
         include!(concat!(env!("OUT_DIR"), "/version.rs"));
         die!(0);
     }
+    xmpp_proxy::install_default_rustls_provider().die("invalid crypto provider");
     let cfg_path = cfg_path.unwrap_or_else(|| OsString::from("/etc/xmpp-proxy/xmpp-proxy.toml"));
     let main_config = Config::parse(&cfg_path).die("invalid config file");
 
@@ -239,7 +240,7 @@ async fn main() {
             if main_config.c2s_target.is_none() && main_config.s2s_target.is_none() {
                 die!("one of c2s_target/s2s_target must be defined if quic_listen is non-empty");
             }
-            let quic_config = quic_server_config(server_config(certs_key.clone()).die("invalid cert/key ?"));
+            let quic_config = quic_server_config(server_config(certs_key.clone()).die("invalid cert/key ?")).die("invalid quick server config");
             for listener in quic_listen {
                 // todo: maybe write a way to Box<dyn> this thing for smaller executable sizes
                 //handles.push(spawn_quic_listener(listener, config.clone(), quic_config.clone()));
@@ -266,7 +267,6 @@ async fn main() {
                     Listener::Unix(listener) => handles.push(spawn_outgoing_listener(listener, outgoing_cfg.clone())),
                 }
             }
-            //#[cfg(not(target_os = "windows"))]
         }
         #[cfg(not(feature = "outgoing"))]
         die!("outgoing_listen non-empty but c2s-outgoing and s2s-outgoing disabled at compile-time");

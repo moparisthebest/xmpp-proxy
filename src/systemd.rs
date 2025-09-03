@@ -1,12 +1,14 @@
 use anyhow::{anyhow, bail, Result};
 use nix::sys::socket::{getsockname, getsockopt, AddressFamily, SockType, SockaddrLike, SockaddrStorage};
-use std::os::fd::BorrowedFd;
 use std::{
     env,
     net::{TcpListener, UdpSocket},
-    os::unix::{
-        io::{FromRawFd, IntoRawFd, RawFd},
-        net::{UnixDatagram, UnixListener},
+    os::{
+        fd::BorrowedFd,
+        unix::{
+            io::{FromRawFd, IntoRawFd, RawFd},
+            net::{UnixDatagram, UnixListener},
+        },
     },
     process,
 };

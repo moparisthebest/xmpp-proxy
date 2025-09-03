@@ -53,7 +53,7 @@ impl StanzaWrite {
                 }
                 let stanza = to_ws_new(buf, end_of_first_tag, is_c2s)?;
                 trace!("{} (after ws conversion) '{}'", client_addr, stanza);
-                Ok(in_wr.feed(Text(stanza)).await?)
+                Ok(in_wr.feed(Text(stanza.into())).await?)
             }
         }
     }
@@ -91,7 +91,7 @@ impl StanzaRead {
                             // actual XMPP stanzas
                             Text(stanza) => {
                                 trace!("{} (before ws conversion) '{}'", client_addr, stanza);
-                                let stanza = from_ws(stanza);
+                                let stanza = from_ws(stanza.to_string());
                                 let stanza = stanza.as_bytes();
                                 // todo: set up websocket connection so max size cannot be bigger than filter.buf.len()
                                 let buf = &mut filter.buf[0..stanza.len()];

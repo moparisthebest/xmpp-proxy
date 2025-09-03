@@ -53,7 +53,11 @@ all_features() {
       do
         for ca_roots in tls-ca-roots-native tls-ca-roots-bundled
         do
-          echo $direction,$proto,$ca_roots$optional
+          # tls-aws-lc-rs-fips requires Go
+          for provider in tls-aws-lc-rs tls-ring
+          do
+            echo $direction,$proto,$ca_roots,$provider$optional
+          done
         done
       done
     done
@@ -63,7 +67,11 @@ all_features() {
   do
     for proto in $(perms tls quic websocket webtransport)
     do
-      echo c2s-incoming,$proto$optional
+      # tls-aws-lc-rs-fips requires Go
+      for provider in tls-aws-lc-rs tls-ring
+      do
+        echo c2s-incoming,$provider,$proto$optional
+      done
     done
   done
 }

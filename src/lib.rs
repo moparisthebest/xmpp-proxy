@@ -28,3 +28,20 @@ pub mod systemd;
 
 pub mod context;
 pub mod in_out;
+
+#[cfg(feature = "rustls")]
+pub fn install_default_rustls_provider() -> Result<(), std::sync::Arc<rustls::crypto::CryptoProvider>> {
+    // set up default crypto provider, only one of these can be called
+    #[cfg(all(feature = "tls-aws-lc-rs", not(feature = "tls-ring")))]
+    use rustls::crypto::aws_lc_rs as provider;
+    #[cfg(all(feature = "tls-ring", not(feature = "tls-aws-lc-rs")))]
+    use rustls::crypto::ring as provider;
+
+    #[cfg(not(any(feature = "tls-ring", feature = "tls-aws-lc-rs")))]
+    compile_error!("one of features `tls-aws-lc-rs` and `tls-ring` must be chosen");
+
+    #[cfg(all(feature = "tls-ring", feature = "tls-aws-lc-rs"))]
+    compile_error!("features `tls-aws-lc-rs` and `tls-ring` are mutually exclusive");
+
+    provider::default_provider().install_default()
+}

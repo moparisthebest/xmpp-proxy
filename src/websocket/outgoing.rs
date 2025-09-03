@@ -5,7 +5,7 @@ use crate::{
 };
 use anyhow::Result;
 use futures_util::StreamExt;
-use rustls::ServerName;
+use rustls::pki_types::ServerName;
 use std::{convert::TryFrom, net::SocketAddr};
 use tokio_tungstenite::tungstenite::{
     client::IntoClientRequest,
@@ -20,7 +20,7 @@ pub async fn websocket_connect(target: SocketAddr, server_name: &str, url: &Uri,
     request.headers_mut().append(SEC_WEBSOCKET_PROTOCOL, "xmpp".parse()?);
     request.headers_mut().append(ORIGIN, origin.parse()?);
 
-    let dnsname = ServerName::try_from(server_name)?;
+    let dnsname = ServerName::try_from(server_name)?.to_owned();
     let stream = tokio::net::TcpStream::connect(target).await?;
     let stream = config.connector.connect(dnsname, stream).await?;
 

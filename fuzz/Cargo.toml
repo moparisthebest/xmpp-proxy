@@ -7,8 +7,8 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-afl = "0.15.1"
+afl = "0.15"
 xmpp-proxy = { path = "..", default-features = false, features = [] }
-tokio = { version = "1.35", features = ["net", "rt", "rt-multi-thread", "macros", "io-util"] }
-sha256 = "1.4.0"
-rxml = "0.9.1"
+tokio = { version = "1.47", features = ["net", "rt", "rt-multi-thread", "macros", "io-util"] }
+sha256 = "1.6"
+rxml = "0.13"

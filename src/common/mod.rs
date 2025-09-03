@@ -7,11 +7,6 @@ use crate::{
 use anyhow::{bail, Result};
 use async_trait::async_trait;
 use log::{info, trace};
-#[cfg(feature = "rustls")]
-use rustls::{
-    sign::{RsaSigningKey, SigningKey},
-    Certificate, PrivateKey,
-};
 use serde::{Deserialize, Deserializer};
 use std::{
     fmt::{Display, Formatter},
@@ -19,7 +14,7 @@ use std::{
     io,
     net::{SocketAddr, UdpSocket},
     path::PathBuf,
-    sync::Arc,
+    time::Duration,
 };
 #[cfg(not(target_os = "windows"))]
 use tokio::net::UnixStream;
@@ -331,8 +326,6 @@ impl<T: AsyncRead + Unpin + Send> Peek for BufReader<T> {
     }
 }
 
-use std::time::Duration;
-
 /// Caution: this will loop forever, call timeout variant `first_bytes_match_buf_timeout`
 async fn first_bytes_match_buf(duration: Duration, stream: &mut (dyn AsyncBufRead + Send + Unpin), len: usize, matcher: fn(&[u8]) -> bool) -> Result<bool> {
     use tokio::io::AsyncBufReadExt;
@@ -416,23 +409,27 @@ pub async fn shuffle_rd_wr_filter_only(
 
 #[cfg(feature = "rustls-pemfile")]
 pub fn read_certified_key(tls_key: &str, tls_cert: &str) -> Result<rustls::sign::CertifiedKey> {
+    use rustls::pki_types::PrivateKeyDer;
     use rustls_pemfile::{certs, read_all, Item};
 
+    let key = rustls::crypto::CryptoProvider::get_default().expect("no crypto provider set").key_provider;
+
     let tls_key = read_all(&mut io::BufReader::new(File::open(tls_key)?))
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))?
         .into_iter()
         .flat_map(|item| match item {
-            Item::RSAKey(der) => RsaSigningKey::new(&PrivateKey(der)).ok().map(Arc::new).map(|r| r as Arc<dyn SigningKey>),
-            Item::PKCS8Key(der) => rustls::sign::any_supported_type(&PrivateKey(der)).ok(),
-            Item::ECKey(der) => rustls::sign::any_supported_type(&PrivateKey(der)).ok(),
+            Ok(Item::Pkcs1Key(der)) => key.load_private_key(PrivateKeyDer::Pkcs1(der)).ok(),
+            Ok(Item::Pkcs8Key(der)) => key.load_private_key(PrivateKeyDer::Pkcs8(der)).ok(),
+            Ok(Item::Sec1Key(der)) => key.load_private_key(PrivateKeyDer::Sec1(der)).ok(),
             _ => None,
         })
         .next()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))?;
 
-    let tls_certs = certs(&mut io::BufReader::new(File::open(tls_cert)?))
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid cert"))
-        .map(|mut certs| certs.drain(..).map(Certificate).collect())?;
+    let mut tls_certs = Vec::with_capacity(2);
+    for cert in certs(&mut io::BufReader::new(File::open(tls_cert)?)) {
+        let cert = cert.map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid cert"))?;
+        tls_certs.push(cert);
+    }
 
     Ok(rustls::sign::CertifiedKey::new(tls_certs, tls_key))
 }

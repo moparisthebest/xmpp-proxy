@@ -1,3 +1,4 @@
+use rxml::{Parse, Parser};
 use std::io::{Cursor, Write};
 use tokio::runtime::Runtime;
 use xmpp_proxy::stanzafilter::{StanzaFilter, StanzaReader};
@@ -11,13 +12,13 @@ fn main() {
             let mut filter = StanzaFilter::new(262_144);
             let mut stanza_reader = StanzaReader(Cursor::new(data));
             while let Ok(Some(stanza)) = stanza_reader.next(&mut filter).await {
-                let mut fp = rxml::FeedParser::default();
-                let result = rxml::as_eof_flag(fp.parse_all(&mut &stanza[..], true, |_ev| {
-                    //println!("got event: {:?}", ev);
-                }));
-                // true indicates eof
-                if let Ok(result) = result {
-                    if result {
+                let mut fp = Parser::new();
+                let result = fp.parse_all(&mut &stanza[..], true, |_ev| {
+                    // println!("got event: {:?}", ev);
+                });
+                // Ok(()) indicates eof
+                match result {
+                    Ok(()) => {
                         // wow, afl generated us valid XML, lets output it as a test case
                         let fname = sha256::digest(stanza);
                         if let Ok(mut file) = std::fs::OpenOptions::new()
@@ -29,9 +30,14 @@ fn main() {
                             file.write_all(stanza).unwrap();
                             file.sync_all().unwrap();
                         }
-                    } else {
+                    }
+                    Err(e) => {
                         // more data is required, stanzafilter should never let this happen, let's panic
-                        panic!("more data required?");
+                        panic!(
+                            "more data required? e: {:?}\nstanza: {}",
+                            e,
+                            String::from_utf8_lossy(stanza)
+                        );
                     }
                 }
             }

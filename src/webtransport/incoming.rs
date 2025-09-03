@@ -11,7 +11,7 @@ pub async fn handle_webtransport_session(conn: quinn::Connection, config: Arc<In
     client_addr.set_proto("webtransport-in");
 
     // Perform the WebTransport handshake.
-    let request = match webtransport_quinn::accept(conn).await {
+    let request = match web_transport_quinn::Request::accept(conn).await {
         Ok(r) => r,
         Err(e) => {
             error!("{} {}", client_addr.log_from(), e);

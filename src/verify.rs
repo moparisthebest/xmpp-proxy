@@ -1,36 +1,24 @@
 use crate::{
-    common::ca_roots::TLS_SERVER_ROOTS,
+    common::ca_roots::{SERVER_VERIFIER, TLS_SERVER_ROOTS},
     srv::{digest, Posh},
 };
 use log::{debug, trace};
 use ring::digest::SHA256;
 use rustls::{
-    client::{ServerCertVerified, ServerCertVerifier},
-    server::{ClientCertVerified, ClientCertVerifier},
-    Certificate, CertificateError, DistinguishedName, Error, ServerName,
+    client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+    pki_types::{CertificateDer, ServerName, SignatureVerificationAlgorithm, UnixTime},
+    server::danger::{ClientCertVerified, ClientCertVerifier},
+    CertificateError, DigitallySignedStruct, DistinguishedName, Error, SignatureScheme,
 };
-use std::{convert::TryFrom, time::SystemTime};
-use webpki::{DnsName, KeyUsage};
-
-type SignatureAlgorithms = &'static [&'static webpki::SignatureAlgorithm];
+use std::{convert::TryFrom, sync::LazyLock};
 
 /// Which signature verification mechanisms we support.  No particular
 /// order.
-static SUPPORTED_SIG_ALGS: SignatureAlgorithms = &[
-    &webpki::ECDSA_P256_SHA256,
-    &webpki::ECDSA_P256_SHA384,
-    &webpki::ECDSA_P384_SHA256,
-    &webpki::ECDSA_P384_SHA384,
-    &webpki::ED25519,
-    &webpki::RSA_PSS_2048_8192_SHA256_LEGACY_KEY,
-    &webpki::RSA_PSS_2048_8192_SHA384_LEGACY_KEY,
-    &webpki::RSA_PSS_2048_8192_SHA512_LEGACY_KEY,
-    &webpki::RSA_PKCS1_2048_8192_SHA256,
-    &webpki::RSA_PKCS1_2048_8192_SHA384,
-    &webpki::RSA_PKCS1_2048_8192_SHA512,
-    &webpki::RSA_PKCS1_3072_8192_SHA384,
-];
+// this expect panic should not be possible to trigger because it'll trigger earlier in execution before we get to cert verification
+static SUPPORTED_SIG_ALGS: LazyLock<&'static [&'static dyn SignatureVerificationAlgorithm]> =
+    LazyLock::new(|| rustls::crypto::CryptoProvider::get_default().expect("no crypto provider set").signature_verification_algorithms.all);
 
+#[allow(deprecated)]
 pub fn pki_error(error: webpki::Error) -> Error {
     use webpki::Error::*;
     match error {
@@ -40,17 +28,21 @@ pub fn pki_error(error: webpki::Error) -> Error {
     }
 }
 
-pub fn verify_is_valid_tls_server_cert<'a>(end_entity: &'a Certificate, intermediates: &'a [Certificate], now: SystemTime) -> Result<webpki::EndEntityCert<'a>, Error> {
+pub fn verify_is_valid_tls_server_cert<'a>(end_entity: &'a CertificateDer, intermediates: &'a [CertificateDer], now: UnixTime) -> Result<webpki::EndEntityCert<'a>, Error> {
     // from WebPkiVerifier, validates CA trusted cert
-    let (cert, chain) = prepare(end_entity, intermediates)?;
-    let webpki_now = webpki::Time::try_from(now).map_err(|_| Error::FailedToGetCurrentTime)?;
+    //let (cert, chain) = prepare(end_entity, intermediates)?;
+    // EE cert must appear first.
+    let cert = webpki::EndEntityCert::try_from(end_entity).map_err(pki_error)?;
 
-    cert.verify_for_usage(SUPPORTED_SIG_ALGS, &TLS_SERVER_ROOTS, &chain, webpki_now, KeyUsage::server_auth(), &[])
+    // todo: check revocation ? where to get CRL list ?
+
+    cert.verify_for_usage(*SUPPORTED_SIG_ALGS, &TLS_SERVER_ROOTS, intermediates, now, webpki::KeyUsage::server_auth(), None, None)
         .map_err(pki_error)?;
 
     Ok(cert)
 }
 
+#[derive(Debug)]
 pub struct AllowAnonymousOrAnyCert;
 
 impl ClientCertVerifier for AllowAnonymousOrAnyCert {
@@ -62,48 +54,49 @@ impl ClientCertVerifier for AllowAnonymousOrAnyCert {
         false
     }
 
-    fn client_auth_root_subjects(&self) -> &[DistinguishedName] {
-        &[]
-    }
-
-    fn verify_client_cert(&self, _: &Certificate, _: &[Certificate], _: SystemTime) -> Result<ClientCertVerified, Error> {
+    fn verify_client_cert(&self, _end_entity: &CertificateDer<'_>, _intermediates: &[CertificateDer<'_>], _now: UnixTime) -> Result<ClientCertVerified, Error> {
         // this is checked only after the first <stream: stanza so we know the from=
         Ok(ClientCertVerified::assertion())
     }
-}
 
-type CertChainAndRoots<'a> = (webpki::EndEntityCert<'a>, Vec<&'a [u8]>);
+    fn root_hint_subjects(&self) -> &[DistinguishedName] {
+        &[]
+    }
 
-fn prepare<'a>(end_entity: &'a Certificate, intermediates: &'a [Certificate]) -> Result<CertChainAndRoots<'a>, Error> {
-    // EE cert must appear first.
-    let cert = webpki::EndEntityCert::try_from(end_entity.0.as_ref()).map_err(pki_error)?;
+    fn verify_tls12_signature(&self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, Error> {
+        SERVER_VERIFIER.verify_tls12_signature(message, cert, dss)
+    }
 
-    let intermediates: Vec<&'a [u8]> = intermediates.iter().map(|cert| cert.0.as_ref()).collect();
+    fn verify_tls13_signature(&self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, Error> {
+        SERVER_VERIFIER.verify_tls13_signature(message, cert, dss)
+    }
 
-    Ok((cert, intermediates))
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        SERVER_VERIFIER.supported_verify_schemes()
+    }
 }
 
 #[derive(Debug)]
 pub struct XmppServerCertVerifier {
-    names: Vec<DnsName>,
+    names: Vec<ServerName<'static>>,
     posh: Option<Posh>,
     sha256_pinnedpubkeys: Vec<String>,
 }
 
 impl XmppServerCertVerifier {
-    pub fn new(names: Vec<DnsName>, posh: Option<Posh>, sha256_pinnedpubkeys: Vec<String>) -> Self {
+    pub fn new(names: Vec<ServerName<'static>>, posh: Option<Posh>, sha256_pinnedpubkeys: Vec<String>) -> Self {
         XmppServerCertVerifier { names, posh, sha256_pinnedpubkeys }
     }
 
-    pub fn verify_cert(&self, end_entity: &Certificate, intermediates: &[Certificate], now: SystemTime) -> Result<ServerCertVerified, Error> {
+    pub fn verify_cert(&self, end_entity: &CertificateDer, intermediates: &[CertificateDer], now: UnixTime) -> Result<ServerCertVerified, Error> {
         if !self.sha256_pinnedpubkeys.is_empty() {
-            let cert = webpki::TrustAnchor::try_from_cert_der(end_entity.0.as_ref()).map_err(pki_error)?;
-            trace!("spki.len(): {}", cert.spki.len());
-            trace!("spki: {:?}", cert.spki);
+            let cert = webpki::anchor_from_trusted_cert(end_entity).map_err(pki_error)?;
+            trace!("subject_public_key_info.len(): {}", cert.subject_public_key_info.len());
+            trace!("subject_public_key_info: {:?}", cert.subject_public_key_info);
             // todo: what is wrong with webpki? it returns *almost* the right answer but missing these leading bytes:
             // guess I'll open an issue... (I assume this is some type of algorithm identifying header or something)
             let mut pubkey: Vec<u8> = vec![48, 130, 1, 34];
-            pubkey.extend(cert.spki);
+            pubkey.extend(cert.subject_public_key_info.as_ref());
 
             if self.sha256_pinnedpubkeys.contains(&digest(&SHA256, &pubkey)) {
                 debug!("pinnedpubkey succeeded for {:?}", self.names.first());
@@ -125,7 +118,7 @@ impl XmppServerCertVerifier {
         let cert = verify_is_valid_tls_server_cert(end_entity, intermediates, now)?;
 
         for name in &self.names {
-            if cert.verify_is_valid_for_subject_name(webpki::SubjectNameRef::DnsName(name.as_ref())).is_ok() {
+            if cert.verify_is_valid_for_subject_name(name).is_ok() {
                 return Ok(ServerCertVerified::assertion());
             }
         }
@@ -137,17 +130,24 @@ impl XmppServerCertVerifier {
 impl ServerCertVerifier for XmppServerCertVerifier {
     fn verify_server_cert(
         &self,
-        end_entity: &Certificate,
-        intermediates: &[Certificate],
-        _server_name: &ServerName,
-        _scts: &mut dyn Iterator<Item = &[u8]>,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
         _ocsp_response: &[u8],
-        now: SystemTime,
+        now: UnixTime,
     ) -> Result<ServerCertVerified, Error> {
         self.verify_cert(end_entity, intermediates, now)
     }
 
-    fn request_scts(&self) -> bool {
-        false
+    fn verify_tls12_signature(&self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, Error> {
+        SERVER_VERIFIER.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(&self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, Error> {
+        SERVER_VERIFIER.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        SERVER_VERIFIER.supported_verify_schemes()
     }
 }

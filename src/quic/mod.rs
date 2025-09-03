@@ -2,8 +2,9 @@ use crate::{
     common::Split,
     in_out::{StanzaRead, StanzaWrite},
 };
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 use quinn::{RecvStream, SendStream};
+use rustls::quic::Suite;
 use std::{
     io::Error,
     pin::Pin,
@@ -33,7 +34,7 @@ impl AsyncRead for QuicStream {
 
 impl AsyncWrite for QuicStream {
     fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, Error>> {
-        Pin::new(&mut self.send).poll_write(cx, buf)
+        Pin::new(&mut self.send).poll_write(cx, buf).map_err(|e| Error::other(e))
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
@@ -64,4 +65,16 @@ impl Split for QuicStream {
     fn stanza_rw(self) -> (StanzaRead, StanzaWrite) {
         (StanzaRead::new(self.recv), StanzaWrite::new(self.send))
     }
+}
+
+pub fn initial_suite_from_provider() -> anyhow::Result<Suite> {
+    rustls::crypto::CryptoProvider::get_default()
+        .ok_or(anyhow!("no rustls default provider"))?
+        .cipher_suites
+        .iter()
+        .find_map(|cs| match (cs.suite(), cs.tls13()) {
+            (rustls::CipherSuite::TLS13_AES_128_GCM_SHA256, Some(suite)) => suite.quic_suite(),
+            _ => None,
+        })
+        .ok_or(anyhow!("no QUIC suite found"))
 }

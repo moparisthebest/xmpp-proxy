@@ -7,8 +7,9 @@ use crate::{
 };
 use anyhow::{anyhow, bail, Result};
 use log::trace;
-use rustls::{Certificate, ServerConfig, ServerConnection};
+use rustls::{ServerConfig, ServerConnection};
 
+use rustls::pki_types::{CertificateDer, UnixTime};
 use std::{io::Write, net::SocketAddr, sync::Arc};
 use tokio::io::AsyncWriteExt;
 
@@ -26,7 +27,7 @@ pub fn server_config(certs_key: Arc<CertsKey>) -> Result<ServerConfig> {
         bail!("invalid cert/key: {}", e);
     }
 
-    let config = ServerConfig::builder().with_safe_defaults();
+    let config = ServerConfig::builder();
     #[cfg(feature = "s2s")]
     let config = config.with_client_cert_verifier(Arc::new(crate::verify::AllowAnonymousOrAnyCert));
     #[cfg(not(feature = "s2s"))]
@@ -51,7 +52,7 @@ pub struct ServerCerts {
 
 #[cfg(any(feature = "s2s-incoming", feature = "webtransport"))]
 struct InnerServerCerts {
-    peer_certificates: Option<Vec<Certificate>>,
+    peer_certificates: Option<Vec<CertificateDer<'static>>>,
     sni: Option<String>,
     alpn: Option<Vec<u8>>,
 }
@@ -72,7 +73,7 @@ impl From<&ServerConnection> for ServerCerts {
 #[cfg(all(feature = "quic", any(feature = "s2s-incoming", feature = "webtransport")))]
 impl From<&quinn::Connection> for ServerCerts {
     fn from(conn: &quinn::Connection) -> Self {
-        let peer_certificates = conn.peer_identity().and_then(|v| v.downcast::<Vec<Certificate>>().ok()).map(|v| v.to_vec());
+        let peer_certificates = conn.peer_identity().and_then(|v| v.downcast::<Vec<CertificateDer<'static>>>().ok()).map(|v| v.to_vec());
         let (sni, alpn) = conn
             .handshake_data()
             .and_then(|v| v.downcast::<quinn::crypto::rustls::HandshakeData>().ok())
@@ -87,7 +88,7 @@ impl From<&quinn::Connection> for ServerCerts {
 
 #[cfg(any(feature = "s2s-incoming", feature = "webtransport"))]
 impl ServerCerts {
-    pub fn peer_certificates(&self) -> Option<&Vec<Certificate>> {
+    pub fn peer_certificates(&self) -> Option<&Vec<CertificateDer<'static>>> {
         self.inner.peer_certificates.as_ref()
     }
 
@@ -134,7 +135,6 @@ pub async fn shuffle_rd_wr_filter(
 
         if !is_c2s {
             // for s2s we need this
-            use std::time::SystemTime;
             let domain = stream_open
                 .extract_between(b" from='", b"'")
                 .or_else(|_| stream_open.extract_between(b" from=\"", b"\""))
@@ -142,7 +142,7 @@ pub async fn shuffle_rd_wr_filter(
             let (_, cert_verifier) = crate::srv::get_xmpp_connections(domain, is_c2s).await?;
             let certs = server_certs.peer_certificates().ok_or_else(|| anyhow!("no client cert auth for s2s incoming from {}", domain))?;
             // todo: send stream error saying cert is invalid
-            cert_verifier.verify_cert(&certs[0], &certs[1..], SystemTime::now())?;
+            cert_verifier.verify_cert(&certs[0], &certs[1..], UnixTime::now())?;
         }
         drop(server_certs);
     }

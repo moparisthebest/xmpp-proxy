@@ -2,11 +2,12 @@ use crate::{
     common::incoming::{shuffle_rd_wr, IncomingConfig, ServerCerts},
     context::Context,
     in_out::{StanzaRead, StanzaWrite},
+    quic::initial_suite_from_provider,
 };
 use anyhow::Result;
 use die::Die;
 use log::{error, info};
-use quinn::{AsyncUdpSocket, Endpoint, EndpointConfig, ServerConfig, TokioRuntime};
+use quinn::{crypto::rustls::QuicServerConfig, AsyncUdpSocket, Endpoint, EndpointConfig, ServerConfig, TokioRuntime};
 use std::{
     net::{SocketAddr, UdpSocket},
     sync::Arc,
@@ -16,6 +17,7 @@ use tokio::task::JoinHandle;
 #[cfg(not(target_os = "windows"))]
 pub fn spawn_quic_listener_unix(udp_socket: std::os::unix::net::UnixDatagram, config: Arc<IncomingConfig>, server_config: ServerConfig) -> JoinHandle<Result<()>> {
     let udp_socket = crate::quic::unix_datagram::wrap_unix_udp_socket(udp_socket).die("cannot wrap unix udp socket");
+    let udp_socket = Arc::new(udp_socket);
     // todo: fake local_addr
     let local_addr = udp_socket.local_addr().die("cannot get local_addr for quic socket");
     let incoming = Endpoint::new_with_abstract_socket(EndpointConfig::default(), Some(server_config), udp_socket, Arc::new(TokioRuntime)).die("cannot listen on port/interface");
@@ -42,7 +44,7 @@ fn internal_spawn_quic_listener(incoming: Endpoint, local_addr: SocketAddr, conf
                     let server_certs = {
                         let server_certs = ServerCerts::from(&new_conn);
                         #[cfg(feature = "webtransport")]
-                        if server_certs.alpn().map(|a| a == webtransport_quinn::ALPN).unwrap_or(false) {
+                        if server_certs.alpn().map(|a| a == web_transport_quinn::ALPN.as_bytes()).unwrap_or(false) {
                             return crate::webtransport::incoming::handle_webtransport_session(new_conn, config, server_certs, local_addr, client_addr).await;
                         }
                         server_certs
@@ -73,13 +75,17 @@ pub async fn handle_quic_session(conn: quinn::Connection, config: Arc<IncomingCo
     }
 }
 
-pub fn quic_server_config(mut server_config: rustls::ServerConfig) -> ServerConfig {
+pub fn quic_server_config(mut server_config: rustls::ServerConfig) -> Result<ServerConfig> {
     #[cfg(feature = "webtransport")]
-    server_config.alpn_protocols.push(webtransport_quinn::ALPN.to_vec());
+    server_config.alpn_protocols.push(web_transport_quinn::ALPN.as_bytes().to_vec());
     let transport_config = quinn::TransportConfig::default();
     // todo: configure transport_config here if needed
-    let mut server_config = ServerConfig::with_crypto(Arc::new(server_config));
+
+    let suite = initial_suite_from_provider()?;
+    let server_config = Arc::new(QuicServerConfig::with_initial(Arc::new(server_config), suite)?);
+
+    let mut server_config = ServerConfig::with_crypto(server_config);
     server_config.transport = Arc::new(transport_config);
 
-    server_config
+    Ok(server_config)
 }
