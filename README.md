@@ -55,12 +55,11 @@ In this mode both prosody doesn't need to do any TLS at all, so it needs no cert
 certificates, move prosody's TLS key to `/etc/xmpp-proxy/le.key` and TLS cert to `/etc/xmpp-proxy/fullchain.cer`, and
 use the provided `xmpp-proxy.toml` configuration as-is.
 
-Edit `/etc/prosody/prosody.cfg.lua`, Add these to modules_enabled:
+Edit `/etc/prosody/prosody.cfg.lua`, Add this to modules_enabled:
 ```
 "net_proxy";
-"s2s_outgoing_proxy";
 ```
-Until prosody-modules is updated, use my new module [mod_s2s_outgoing_proxy.lua](https://www.moparisthebest.com/mod_s2s_outgoing_proxy.lua).
+Until prosody-modules is updated, use my fork [mod_net_proxy.lua](https://raw.githubusercontent.com/moparisthebest/xmpp-proxy/refs/heads/master/contrib/prosody-modules/mod_net_proxy.lua).
 
 Add this config:
 ```
@@ -76,7 +75,9 @@ c2s_require_encryption = false
 allow_unencrypted_plain_auth = true
 
 -- xmpp-proxy outgoing is listening on this port, make all outgoing s2s connections directly to here
-s2s_outgoing_proxy = { "127.0.0.1", 15270 }
+proxy_out = { "127.0.0.1", 15270 }
+-- mark connections to/from proxy as secure, xmpp-proxy guarantees this
+proxy_secure = true
 
 -- handle PROXY protocol on these ports
 proxy_port_mappings = {
@@ -100,15 +101,13 @@ and TLS cert to `/etc/xmpp-proxy/fullchain.cer`, and use the provided `xmpp-prox
 Edit `/etc/prosody/prosody.cfg.lua`, Add these to modules_enabled:
 ```
 "net_proxy";
-"secure_interfaces";
 ```
-Until prosody-modules is updated, use my patched version of [mod_secure_interfaces.lua](https://www.moparisthebest.com/mod_secure_interfaces.lua)
-which also works for s2s.
+Until prosody-modules is updated, use my fork [mod_net_proxy.lua](https://raw.githubusercontent.com/moparisthebest/xmpp-proxy/refs/heads/master/contrib/prosody-modules/mod_net_proxy.lua).
 
 Add this config:
 ```
--- trust connections coming to these IPs
-secure_interfaces = { "127.0.0.1", "::1" }
+-- mark connections from proxy as secure, xmpp-proxy guarantees this
+proxy_secure_in = true
 
 -- handle PROXY protocol on these ports
 proxy_port_mappings = {

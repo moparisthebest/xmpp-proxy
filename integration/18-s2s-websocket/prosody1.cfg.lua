@@ -90,7 +90,6 @@ modules_enabled = {
 		--"legacyauth"; -- Legacy authentication. Only used by some old clients and bots.
 		--"proxy65"; -- Enables a file transfer proxy service which clients behind NAT can use
 		"net_proxy";
-		"s2s_outgoing_proxy";
 }
 
 -- These modules are auto-loaded, but should you want
@@ -113,7 +112,9 @@ s2s_require_encryption = false
 s2s_secure_auth = false
 
 -- xmpp-proxy outgoing is listening on this port, make all outgoing s2s connections directly to here
-s2s_outgoing_proxy = { "192.5.0.40", 15270 }
+proxy_out = { "192.5.0.40", 15270 }
+-- mark connections to/from proxy as secure, xmpp-proxy guarantees this
+proxy_secure = true
 
 -- handle PROXY protocol on these ports
 proxy_port_mappings = {

@@ -90,8 +90,6 @@ modules_enabled = {
 		--"legacyauth"; -- Legacy authentication. Only used by some old clients and bots.
 		--"proxy65"; -- Enables a file transfer proxy service which clients behind NAT can use
 		"net_proxy";
-		--"s2s_outgoing_proxy";
-		"secure_interfaces";
 }
 
 -- These modules are auto-loaded, but should you want
@@ -129,9 +127,7 @@ proxy_trusted_proxies = {
     "192.5.0.50"
 }
 
-secure_interfaces = {
-    "192.5.0.50"
-}
+proxy_secure_in = true
 
 -- don't listen on any normal c2s/s2s ports (xmpp-proxy listens on these now)
 -- you might need to comment these out further down in your config file if you set them

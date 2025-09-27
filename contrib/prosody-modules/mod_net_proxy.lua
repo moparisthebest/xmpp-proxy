@@ -15,6 +15,7 @@ local net = require "util.net";
 local set = require "util.set";
 local portmanager = require "core.portmanager";
 local fmt = require "util.format".format;
+local basic_resolver = require "net.resolvers.basic";
 
 -- Backwards Compatibility
 local function net_ntop_bc(input)
@@ -466,3 +467,46 @@ module:provides("net", {
 	listener = listener;
 	default_ports = mapped_ports;
 });
+
+function module.add_host(module)
+    local proxy_out = module:get_option("proxy_out", "");
+
+    local proxy_secure = module:get_option("proxy_secure", false);
+    local proxy_secure_in = proxy_secure or module:get_option("proxy_secure_in", false);
+    local proxy_secure_out = proxy_secure or module:get_option("proxy_secure_out", false);
+
+    if proxy_out ~= "" then
+        -- this redirects outgoing s2s connections to a static host:port
+        local host, port = proxy_out[1] or proxy_out, tonumber(proxy_out[2]) or 15270;
+        module:log("debug", "proxy_out: '%s:%d' proxy_secure_out: %s proxy_secure_in: %s", host, port, proxy_secure_out, proxy_secure_in);
+        module:hook("s2sout-pre-connect", function (event)
+            local session = event.session;
+
+            module:log("debug", "proxy_out redirect for '%s'", session.to_host);
+
+            if proxy_secure_out then
+                -- mark it secure so we will offer SASL EXTERNAL auth
+                session.secure = true;
+            end
+
+            event.resolver = basic_resolver.new(host, port, "tcp");
+        end);
+    else
+        module:log("debug", "proxy_secure_in: %s", proxy_secure_in);
+    end
+
+    if proxy_secure_in then
+        -- this hook marks incoming s2s as secure so we offer SASL EXTERNAL auth
+        module:hook("s2s-stream-features", function(event)
+            local session = event.origin;
+            -- check that proxyip isn't nil to make sure the connection was handled by this module
+            if session.conn.proxyip and session.type == "s2sin_unauthed" then
+                module:log("debug", "proxy_in for '%s' marked secure with validated cert", session.from_host);
+                session.secure = true;
+                session.cert_chain_status = "valid";
+                session.cert_identity_status = "valid";
+            end
+        end, 9000);
+    end
+
+end

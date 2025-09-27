@@ -7,7 +7,6 @@ quic_listen = [ ]
 outgoing_listen = [ ]
 
 # these ports shouldn't do any TLS, but should assume any connection from xmpp-proxy is secure
-# prosody module: https://modules.prosody.im/mod_secure_interfaces.html
 
 # c2s port backend XMPP server listens on
 c2s_target = "192.5.0.20:15222"
