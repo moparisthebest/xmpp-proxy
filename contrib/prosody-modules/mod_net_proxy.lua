@@ -14,6 +14,7 @@ local ip = require "util.ip";
 local net = require "util.net";
 local set = require "util.set";
 local portmanager = require "core.portmanager";
+local fmt = require "util.format".format;
 
 -- Backwards Compatibility
 local function net_ntop_bc(input)
@@ -81,7 +82,7 @@ local trusted_networks = set.new();
 local proxy_data_mt = {}; proxy_data_mt.__index = proxy_data_mt;
 
 function proxy_data_mt:describe()
-	return string.format("proto=%s/%s src=%s:%d dst=%s:%d",
+	return fmt("proto=%s/%s src=%s:%d dst=%s:%d",
 		self:addr_family_str(), self:transport_str(), self:src_addr(), self:src_port(), self:dst_addr(), self:dst_port());
 end
 

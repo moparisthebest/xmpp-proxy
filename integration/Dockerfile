@@ -42,7 +42,6 @@ COPY --from=build /build/*/*.pkg.tar* /tmp/
 RUN pacman -S --noconfirm --disable-download-timeout --needed bind nginx prosody lua52-sec ejabberd nss mkcert curl unbound && \
     usermod --expiredate= jabber && \
     pacman -U --noconfirm --needed /tmp/*.pkg.tar* && rm -f /tmp/*.pkg.tar* && \
-    pacman -U --noconfirm --needed https://burtrum.org/archlinux/extra/os/x86_64/prosody-1%3A0.12.5-1-x86_64.pkg.tar.zst && \
     mkdir -p /opt/xmpp-proxy/prosody-modules/ /opt/prosody-modules/ /scansion && mkcert -install && \
     mkdir -p /etc/certs/ecdsa && cd /etc/certs/ecdsa && \
     mkcert -ecdsa -client -cert-file one.example.org.crt -key-file one.example.org.key one.example.org && \
