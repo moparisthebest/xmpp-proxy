@@ -33,11 +33,7 @@ fn main() {
                     }
                     Err(e) => {
                         // more data is required, stanzafilter should never let this happen, let's panic
-                        panic!(
-                            "more data required? e: {:?}\nstanza: {}",
-                            e,
-                            String::from_utf8_lossy(stanza)
-                        );
+                        panic!("more data required? e: {:?}\nstanza: {}", e, String::from_utf8_lossy(stanza));
                     }
                 }
             }

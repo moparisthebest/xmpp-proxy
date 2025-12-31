@@ -70,11 +70,12 @@ impl Iterator for SocketAddrs {
 }
 
 fn make_https_client() -> Client {
-    // todo: configure our root certs here, they want raw Der though which webpki-roots doesn't have...
     Client::builder()
         .https_only(true)
+        // todo: configure our root certs here, they want raw Pem or Der though which webpki-roots doesn't have...
+        //.tls_certs_only(ROOT_STORE.roots)
         .timeout(Duration::from_secs(10))
-        .dns_resolver2(HickoryDnsResolver)
+        .dns_resolver(HickoryDnsResolver)
         .build()
         .expect("failed to make https client?")
 }
