@@ -10,7 +10,6 @@ use log::{info, trace};
 use serde::{Deserialize, Deserializer};
 use std::{
     fmt::{Display, Formatter},
-    fs::File,
     io,
     net::{SocketAddr, UdpSocket},
     path::PathBuf,
@@ -409,26 +408,21 @@ pub async fn shuffle_rd_wr_filter_only(
 
 #[cfg(feature = "rustls-pemfile")]
 pub fn read_certified_key(tls_key: &str, tls_cert: &str) -> Result<rustls::sign::CertifiedKey> {
-    use rustls::pki_types::PrivateKeyDer;
-    use rustls_pemfile::{certs, read_all, Item};
+    use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
 
     let key = rustls::crypto::CryptoProvider::get_default().expect("no crypto provider set").key_provider;
 
-    let tls_key = read_all(&mut io::BufReader::new(File::open(tls_key)?))
-        .into_iter()
+    let tls_key = PrivateKeyDer::pem_file_iter(tls_key)?
         .flat_map(|item| match item {
-            Ok(Item::Pkcs1Key(der)) => key.load_private_key(PrivateKeyDer::Pkcs1(der)).ok(),
-            Ok(Item::Pkcs8Key(der)) => key.load_private_key(PrivateKeyDer::Pkcs8(der)).ok(),
-            Ok(Item::Sec1Key(der)) => key.load_private_key(PrivateKeyDer::Sec1(der)).ok(),
-            _ => None,
+            Ok(pk) => key.load_private_key(pk).ok(),
+            Err(_) => None,
         })
         .next()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))?;
 
     let mut tls_certs = Vec::with_capacity(2);
-    for cert in certs(&mut io::BufReader::new(File::open(tls_cert)?)) {
-        let cert = cert.map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid cert"))?;
-        tls_certs.push(cert);
+    for cert in CertificateDer::pem_file_iter(tls_cert)? {
+        tls_certs.push(cert?);
     }
 
     Ok(rustls::sign::CertifiedKey::new(tls_certs, tls_key))

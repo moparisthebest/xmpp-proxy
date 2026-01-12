@@ -60,7 +60,6 @@ pin-project-lite = { version = "0.2", optional = true }
 
 # shared deps needed by quic and incoming
 rustls = { version = "0.23", optional = true, default-features = false }
-rustls-pemfile = { version = "2.2", optional = true, default-features = false, features = ["std"] }
 
 # websocket deps
 tokio-tungstenite = { version = "0.28", optional = true, default-features = false, features = ["handshake"] }
@@ -86,6 +85,7 @@ incoming = ["rustls-pemfile"]
 outgoing = ["srv"]
 c2s = []
 s2s = ["srv", "rustls-pemfile"]
+rustls-pemfile = []
 
 # you must pick one or more of these, you may pick them all
 c2s-incoming = ["incoming", "c2s"]
