@@ -9,6 +9,6 @@ edition = "2018"
 [dependencies]
 afl = "0.17"
 xmpp-proxy = { path = "..", default-features = false, features = [] }
-tokio = { version = "1.48", features = ["net", "rt", "rt-multi-thread", "macros", "io-util"] }
+tokio = { version = "1.49", features = ["net", "rt", "rt-multi-thread", "macros", "io-util"] }
 sha256 = "1.6"
 rxml = "0.13"
